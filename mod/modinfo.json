@@ -1,0 +1,14 @@
+{
+  "id": "dion_hunted",
+  "name": "Hunted",
+  "version": "0.1.0",
+  "hide_version": false,
+  "target_game_version": "v1.11.8",
+  "authors": "Dion",
+  "description": "A second slugcat, the Pursuer, spawns somewhere in the world at the start of your campaign and closes in by two shelters every cycle you survive. When it reaches your region it becomes a real creature that tracks you down room by room and tries to kill you, scavenging gear along the way.<LINE><LINE>Stage 1: the Pursuer is an elite scavenger driven by scavenger AI, with a permanent grudge and a target lock on you. It is part of the ecosystem: lizards, vultures and other scavengers treat it like any other scavenger.<LINE><LINE>Remix options include gameplay tuning (shelters per cycle, spawn distance, retreat and respawn rules) and a Testing tab with hotkeys to summon, teleport, gear up, kill or reset the Pursuer, plus an on-screen tracker so you never have to wait cycles to test it.<LINE><LINE>Source and bug reports: https://github.com/dion-hagan/rainworld-hunted",
+  "requirements": [],
+  "requirements_names": [],
+  "tags": [ "Creatures", "Game Modes" ],
+  "priorities": [],
+  "checksum_override_version": false
+}

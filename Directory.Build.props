@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    Path to your Rain World install. Override by setting the RAINWORLD_PATH
+    environment variable if this mod is built on a different machine.
+  -->
+  <PropertyGroup>
+    <RainWorldPath Condition="'$(RAINWORLD_PATH)' != ''">$(RAINWORLD_PATH)</RainWorldPath>
+    <RainWorldPath Condition="'$(RainWorldPath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Rain World</RainWorldPath>
+    <RainWorldManagedPath>$(RainWorldPath)\RainWorld_Data\Managed</RainWorldManagedPath>
+    <RainWorldBepInExCorePath>$(RainWorldPath)\BepInEx\core</RainWorldBepInExCorePath>
+  </PropertyGroup>
+</Project>
