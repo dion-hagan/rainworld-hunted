@@ -64,6 +64,13 @@ namespace Hunted.Game
                 creature.Realize();
                 if (creature.realizedCreature != null)
                 {
+                    // Player's constructor binds the body to the realized room at its abstract
+                    // position. Creature.SpitOutOfShortCut only calls NewRoom (which is what
+                    // hands the room to the AI modules) when the room changes, so a slugcat
+                    // born inside a realized room would never get it and its AI would run on
+                    // null rooms. Clear it so the pipe exit counts as entering the room, which
+                    // is what happens to every other creature.
+                    creature.realizedCreature.room = null;
                     creature.realizedCreature.inShortcut = true;
                     world.game.shortcuts.CreatureEnterFromAbstractRoom(creature.realizedCreature, room, node);
                 }

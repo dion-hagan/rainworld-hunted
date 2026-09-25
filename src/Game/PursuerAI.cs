@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using MoreSlugcats;
+using Noise;
 using RWCustom;
 using UnityEngine;
 
@@ -144,6 +145,31 @@ namespace Hunted.Game
             }
         }
 
+        /// <summary>
+        /// Room noises come from other objects' updates (the player's own movement raises
+        /// them), so an exception here would abort the player's update, not ours. Never throw,
+        /// and ignore noises until the modules have a room to place them in.
+        /// </summary>
+        public override void HeardNoise(InGameNoise noise)
+        {
+            if (noiseTracker == null || noiseTracker.room == null)
+            {
+                return;
+            }
+            try
+            {
+                base.HeardNoise(noise);
+            }
+            catch (Exception e)
+            {
+                if (errorLogCooldown <= 0)
+                {
+                    errorLogCooldown = 400;
+                    HuntedLog.Error("PursuerAI could not process a noise", e);
+                }
+            }
+        }
+
         private void UpdateModules()
         {
             // What ArtificialIntelligence.Update does for every AI, minus expedition extras.
@@ -154,14 +180,28 @@ namespace Hunted.Game
             }
         }
 
+        /// <summary>
+        /// The game hands the room to the AI through Creature.NewRoom when the body enters a
+        /// room. Paths that skip it (a body created straight into a realized room, a second
+        /// Realize on a live body) would leave every module without a room, so catch up here.
+        /// </summary>
+        private void EnsureRoom(Player body)
+        {
+            if (lastRoom != body.room.abstractRoom.index)
+            {
+                NewRoom(body.room);
+            }
+        }
+
         private void Think()
         {
-            UpdateModules();
             Player body = cat;
             if (body == null || body.room == null)
             {
                 return;
             }
+            EnsureRoom(body);
+            UpdateModules();
             forceJump = Math.Max(forceJump - 1, 0);
             catchDelay = Math.Max(catchDelay - 1, 0);
             turnDelay = Math.Max(turnDelay - 1, 0);

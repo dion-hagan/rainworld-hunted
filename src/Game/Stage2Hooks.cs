@@ -51,6 +51,12 @@ namespace Hunted.Game
         {
             if (IsSlugcatPursuer(self) && self.abstractAI != null)
             {
+                if (self.abstractAI.RealAI is PursuerAI)
+                {
+                    // Realize ran again on a live body (Abstractize clears RealAI, so this is
+                    // the same body): keep the AI and what it remembers about the player.
+                    return;
+                }
                 try
                 {
                     self.abstractAI.RealAI = new PursuerAI(self, self.world);
