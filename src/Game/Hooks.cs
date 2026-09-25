@@ -49,6 +49,7 @@ namespace Hunted.Game
             // Looks and HUD
             On.ScavengerGraphics.ctor += ScavengerGraphics_ctor;
             On.HUD.HUD.InitSinglePlayerHud += HUD_InitSinglePlayerHud;
+            On.Menu.SleepAndDeathScreen.GetDataFromGame += SleepAndDeathScreen_GetDataFromGame;
         }
 
         private static bool IsPursuer(AbstractCreature creature)
@@ -398,6 +399,27 @@ namespace Hunted.Game
             catch (Exception e)
             {
                 HuntedLog.Error("HUD hook failed", e);
+            }
+        }
+
+        private static void SleepAndDeathScreen_GetDataFromGame(On.Menu.SleepAndDeathScreen.orig_GetDataFromGame orig, Menu.SleepAndDeathScreen self, Menu.KarmaLadderScreen.SleepDeathScreenDataPackage package)
+        {
+            orig(self, package);
+            string summary = HuntedSession.LastCycleSummary;
+            if (string.IsNullOrEmpty(summary) || self.pages == null || self.pages.Count == 0)
+            {
+                return;
+            }
+            try
+            {
+                HuntedSession.LastCycleSummary = null;
+                var label = new Menu.MenuLabel(self, self.pages[0], summary, new Vector2(0f, 52f), new Vector2(1366f, 20f), false);
+                label.label.color = new Color(0.9f, 0.35f, 0.3f);
+                self.pages[0].subObjects.Add(label);
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("Sleep screen hook failed", e);
             }
         }
     }

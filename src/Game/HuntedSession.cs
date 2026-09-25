@@ -20,6 +20,9 @@ namespace Hunted.Game
 
         public static HuntedSession Current { get; private set; }
 
+        /// <summary>One line about the Pursuer for the next sleep/death screen, set when a cycle is resolved.</summary>
+        public static string LastCycleSummary;
+
         public readonly RainWorldGame game;
         public readonly SaveState saveState;
         public readonly ShelterGraph graph;
@@ -406,6 +409,7 @@ namespace Hunted.Game
             PursuerState next = PursuerTracker.OnCycleSurvived(graph, State, saveState.denPosition, malnourished, Snapshot(), Config, saveState.cycleNumber, log);
             next.ScavKills += ScavKillsThisCycle;
             State = next;
+            LastCycleSummary = Summary(false);
             FlushLog(malnourished ? "starved sleep" : "sleep");
         }
 
@@ -417,7 +421,28 @@ namespace Hunted.Game
             }
             Resolved = true;
             State = PursuerTracker.OnPlayerDied(graph, State, saveState.denPosition, PlayerKilledByPursuer, Config, log);
+            LastCycleSummary = Summary(true);
             FlushLog("death");
+        }
+
+        private string Summary(bool afterDeath)
+        {
+            int hops = PursuerTracker.HopsAway(graph, State, saveState.denPosition);
+            switch (State.Status)
+            {
+                case PursuerStatus.Dead:
+                    int cycles = Math.Max(0, State.RespawnCycle - saveState.cycleNumber);
+                    return cycles == 0 ? "The Pursuer stirs again." : "The Pursuer is dead. It returns in " + cycles + (cycles == 1 ? " cycle." : " cycles.");
+                case PursuerStatus.Arrived:
+                    return "The Pursuer is here. " + Capitalize(PursuerTracker.Describe(hops)) + " from this shelter.";
+                default:
+                    return (afterDeath ? "The Pursuer withdraws. " : "The Pursuer draws closer. ") + Capitalize(PursuerTracker.Describe(hops)) + " away.";
+            }
+        }
+
+        private static string Capitalize(string s)
+        {
+            return string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
         }
 
         private InWorldSnapshot Snapshot()
