@@ -61,7 +61,7 @@ namespace Hunted.Tests
             int tick = 0;
             for (int i = 0; i < 400; i++)
             {
-                policy.Epsilon = i < 100 ? 1f : 0.2f;   // explore first, then mostly exploit
+                policy.FixedEpsilon = i < 100 ? 1f : 0.2f;   // explore first, then mostly exploit
                 Tactic chosen = policy.Choose(near, tick);
                 if (chosen == Tactic.Wait && i % 2 == 0)
                 {
@@ -79,7 +79,7 @@ namespace Hunted.Tests
                 }
                 tick += 100;
             }
-            policy.Epsilon = 0f;
+            policy.FixedEpsilon = 0f;
             Assert.Equal(Tactic.Wait, policy.Choose(near, tick));
             Assert.Equal(Tactic.Throw, policy.Choose(far, tick + 100));
         }
@@ -87,7 +87,7 @@ namespace Hunted.Tests
         [Fact]
         public void UnrewardedTacticsConvergeToZeroInsteadOfStayingRandom()
         {
-            var policy = new TacticPolicy(1, 11) { Epsilon = 1f, LearningRate = 0.1f, RewardWindowTicks = 80 };
+            var policy = new TacticPolicy(1, 11) { FixedEpsilon = 1f, LearningRate = 0.1f, RewardWindowTicks = 80 };
             float[] x = { 1f };
             int tick = 0;
             for (int i = 0; i < 600; i++)
@@ -114,7 +114,7 @@ namespace Hunted.Tests
             // Twin policies share seed, so they start identical and only differ by what was credited.
             float[] a = { 1f };
             float[] b = { 0f };
-            TacticPolicy Make() => new TacticPolicy(1, 5) { Epsilon = 1f, LearningRate = 0.5f, RewardWindowTicks = 80 };
+            TacticPolicy Make() => new TacticPolicy(1, 5) { FixedEpsilon = 1f, LearningRate = 0.5f, RewardWindowTicks = 80 };
 
             var nobodyThrew = Make();            // a throw outcome with no recorded throw credits nobody
             nobodyThrew.Choose(a, 0); nobodyThrew.Choose(b, 20);
@@ -143,7 +143,7 @@ namespace Hunted.Tests
         [Fact]
         public void RewardsOnlyReachDecisionsInsideTheWindow()
         {
-            var policy = new TacticPolicy(1, 5) { Epsilon = 0f, LearningRate = 0.5f, RewardWindowTicks = 80 };
+            var policy = new TacticPolicy(1, 5) { FixedEpsilon = 0f, LearningRate = 0.5f, RewardWindowTicks = 80 };
             float[] x = { 1f };
             float[] before = (float[])policy.Evaluate(x).Clone();
             policy.Choose(x, 0);
@@ -156,6 +156,62 @@ namespace Hunted.Tests
             policy.Flush();
             float[] trained = policy.Evaluate(x);
             Assert.NotEqual(after, trained);
+        }
+
+        [Fact]
+        public void ExplorationDecaysWithExperienceButKeepsAFloor()
+        {
+            var policy = new TacticPolicy(1, 2);
+            Assert.Equal(0.3f, policy.Epsilon, 3);
+            float[] x = { 1f };
+            int tick = 0;
+            for (int i = 0; i < 300; i++) { policy.Choose(x, tick); tick += 100; }
+            Assert.Equal(0.15f, policy.Epsilon, 2);          // one half-life
+            for (int i = 0; i < 1500; i++) { policy.Choose(x, tick); tick += 100; }
+            Assert.Equal(0.05f, policy.Epsilon, 3);          // the floor
+        }
+
+        [Fact]
+        public void ExplorationReopensWhenTheRewardsStopMatchingTheEstimates()
+        {
+            var policy = new TacticPolicy(1, 4) { LearningRate = 0.05f, EpsilonHalfLife = 50 };
+            float[] x = { 1f };
+            int tick = 0;
+            // A stable world: Wait pays, everything else does not. Long enough to reach the floor.
+            for (int i = 0; i < 800; i++)
+            {
+                Tactic chosen = policy.Choose(x, tick);
+                if (chosen == Tactic.Wait) policy.Reward(1f, tick + 10);
+                tick += 100;
+            }
+            policy.Flush();
+            float settled = policy.Epsilon;
+            Assert.True(settled < 0.08f, "settled at " + settled);
+
+            // The player changes habits: now Wait is punished and Throw pays.
+            float peak = settled;
+            for (int i = 0; i < 200; i++)
+            {
+                Tactic chosen = policy.Choose(x, tick);
+                if (chosen == Tactic.Wait) policy.Reward(-1f, tick + 10);
+                if (chosen == Tactic.Throw) policy.Reward(1f, tick + 10);
+                tick += 100;
+                peak = System.Math.Max(peak, policy.Epsilon);
+            }
+            Assert.True(peak > settled + 0.1f, "exploration only reached " + peak);
+
+            // Once it has adapted, exploration settles again and it picks the new best tactic.
+            for (int i = 0; i < 1500; i++)
+            {
+                Tactic chosen = policy.Choose(x, tick);
+                if (chosen == Tactic.Wait) policy.Reward(-1f, tick + 10);
+                if (chosen == Tactic.Throw) policy.Reward(1f, tick + 10);
+                tick += 100;
+            }
+            policy.Flush();
+            Assert.True(policy.Epsilon < peak, "still exploring at " + policy.Epsilon);
+            policy.FixedEpsilon = 0f;
+            Assert.Equal(Tactic.Throw, policy.Choose(x, tick));
         }
 
         [Fact]
@@ -172,6 +228,8 @@ namespace Hunted.Tests
             Assert.True(TacticPolicy.TryParse(text, 4, 9, out TacticPolicy back), text);
             Assert.Equal(1, back.Decisions);
             Assert.Equal(1, back.Rewards);
+            Assert.Equal(policy.RecentSurprise, back.RecentSurprise);
+            Assert.Equal(policy.BaselineSurprise, back.BaselineSurprise);
             Assert.Equal(before, back.Evaluate(x));
             Assert.False(TacticPolicy.TryParse(text, 5, 9, out _), "a network with the wrong input count must be rejected");
             Assert.False(TacticPolicy.TryParse("v=0|net=nope", 4, 9, out _));

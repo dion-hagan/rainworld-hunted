@@ -630,6 +630,7 @@ namespace Hunted.Game
             PursuerDiedThisCycle = true;
             lastKnownAlive = false;
             HuntedLog.Info("The Pursuer died in " + (creature.Room != null ? creature.Room.name : lastKnownRoom) + ".");
+            Learner.Reward(-3f, "died");
         }
 
         public void OnPlayerDied(Player player)

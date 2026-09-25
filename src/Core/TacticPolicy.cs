@@ -33,8 +33,40 @@ namespace Hunted.Core
 
         /// <summary>How long after a decision a reward still counts for it, in ticks.</summary>
         public int RewardWindowTicks = 80;
-        public float Epsilon = 0.15f;
         public float LearningRate = 0.01f;
+
+        /// <summary>Exploration at a fresh file: this share of decisions is random.</summary>
+        public float InitialEpsilon = 0.3f;
+        /// <summary>Exploration halves every this many decisions...</summary>
+        public int EpsilonHalfLife = 300;
+        /// <summary>...but never drops below this, so a change in the player's habits can still be noticed.</summary>
+        public float MinEpsilon = 0.05f;
+        /// <summary>Tests pin exploration here; null means the schedule applies.</summary>
+        public float? FixedEpsilon;
+
+        /// <summary>
+        /// Exploration right now: a schedule that decays with experience, reopened when recent
+        /// outcomes surprise the estimates more than they usually do (the player changed style).
+        /// </summary>
+        public float Epsilon
+        {
+            get
+            {
+                if (FixedEpsilon.HasValue)
+                {
+                    return FixedEpsilon.Value;
+                }
+                float scheduled = Math.Max(MinEpsilon, InitialEpsilon * (float)Math.Pow(0.5, (double)Decisions / EpsilonHalfLife));
+                float surprise = Math.Max(0f, (RecentSurprise - BaselineSurprise) / (BaselineSurprise + 0.1f));
+                float reopened = MinEpsilon + Math.Min(1f, surprise) * (InitialEpsilon - MinEpsilon);
+                return Math.Max(scheduled, reopened);
+            }
+        }
+
+        /// <summary>Average |credit - estimate| over roughly the last ten trained decisions.</summary>
+        public float RecentSurprise { get; private set; }
+        /// <summary>The same over roughly the last hundred: what "normal" surprise looks like for this player.</summary>
+        public float BaselineSurprise { get; private set; }
 
         public int Features { get; }
         public int Decisions { get; private set; }
@@ -53,6 +85,7 @@ namespace Hunted.Core
             public int Tactic;
             public int Tick;
             public float Credit;
+            public float Predicted;
         }
 
         public TacticPolicy(int features, int seed) : this(new TinyNet(features, 16, TacticCount, seed), seed)
@@ -79,6 +112,7 @@ namespace Hunted.Core
             {
                 throw new ArgumentException("Expected " + Features + " features", nameof(features));
             }
+            Evaluate(features);
             int choice;
             if (rng.NextDouble() < Epsilon)
             {
@@ -86,7 +120,6 @@ namespace Hunted.Core
             }
             else
             {
-                Evaluate(features);
                 choice = 0;
                 for (int i = 1; i < TacticCount; i++)
                 {
@@ -96,7 +129,7 @@ namespace Hunted.Core
                     }
                 }
             }
-            pending.Add(new Decision { Features = (float[])features.Clone(), Tactic = choice, Tick = tick });
+            pending.Add(new Decision { Features = (float[])features.Clone(), Tactic = choice, Tick = tick, Predicted = scores[choice] });
             Decisions++;
             Expire(tick);
             return (Tactic)choice;
@@ -166,6 +199,9 @@ namespace Hunted.Core
 
         private void Learn(Decision d)
         {
+            float surprise = Math.Abs(d.Credit - d.Predicted);
+            RecentSurprise += (surprise - RecentSurprise) * 0.1f;
+            BaselineSurprise += (surprise - BaselineSurprise) * 0.01f;
             net.Train(d.Features, d.Tactic, d.Credit, LearningRate);
             if (ReferenceEquals(d, lastThrow))
             {
@@ -194,6 +230,8 @@ namespace Hunted.Core
                 + "|d=" + Decisions.ToString(CultureInfo.InvariantCulture)
                 + "|r=" + Rewards.ToString(CultureInfo.InvariantCulture)
                 + "|t=" + TotalReward.ToString("R", CultureInfo.InvariantCulture)
+                + "|rs=" + RecentSurprise.ToString("R", CultureInfo.InvariantCulture)
+                + "|bs=" + BaselineSurprise.ToString("R", CultureInfo.InvariantCulture)
                 + "|net=" + net.Serialize();
         }
 
@@ -207,7 +245,7 @@ namespace Hunted.Core
             }
             TinyNet net = null;
             int decisions = 0, rewards = 0;
-            float total = 0f;
+            float total = 0f, recent = 0f, baseline = 0f;
             bool versionOk = false;
             foreach (string part in text.Split('|'))
             {
@@ -224,6 +262,8 @@ namespace Hunted.Core
                     case "d": int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out decisions); break;
                     case "r": int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out rewards); break;
                     case "t": float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out total); break;
+                    case "rs": float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out recent); break;
+                    case "bs": float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out baseline); break;
                     case "net":
                         if (!TinyNet.TryParse(value, out net))
                         {
@@ -236,7 +276,7 @@ namespace Hunted.Core
             {
                 return false;
             }
-            policy = new TacticPolicy(net, seed) { Decisions = decisions, Rewards = rewards, TotalReward = total };
+            policy = new TacticPolicy(net, seed) { Decisions = decisions, Rewards = rewards, TotalReward = total, RecentSurprise = recent, BaselineSurprise = baseline };
             return true;
         }
     }
