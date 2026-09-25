@@ -43,7 +43,7 @@ every 300 decisions down to a 5% floor. When outcomes keep surprising its estima
 (for example, you changed how you fight) exploration reopens by itself and settles
 again once it has adapted; a single unlucky hit does not. Every reward
 is logged as `Tactic reward`. What it learns is saved per save slot and slugcat in
-`ModConfigs/dion_hunted_tactics_<slot>_<slugcat>.txt`, outside the death-
+`RainWorld_Data/StreamingAssets/ModConfigs/dion_hunted_tactics_<slot>_<slugcat>.txt`, outside the death-
 persistent save, so it survives deaths, quits and new campaigns on that slot: it
 describes you, not the run. F12 resets it, and **Remix → Hunted → Forget learned
 tactics** deletes every slot. With testing hotkeys on, the overlay also shows the

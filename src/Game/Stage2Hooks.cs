@@ -94,8 +94,12 @@ namespace Hunted.Game
             orig(self);
             if (IsSlugcatPursuer(self.abstractCreature))
             {
-                // Not a pup: an adult body with Hunter's speed, throws and climbing.
-                self.SlugCatClass = SlugcatStats.Name.Red;
+                // Not a pup: an adult body. Hunter's speed and throws come from the slugcatStats
+                // detour below; the class itself stays Survivor because Player's constructor has a
+                // Hunter-only branch that reads room.game with no null check, and room is null when
+                // a creature is realized on its way into a room (AbstractCreature.ChangeRooms).
+                // Red would also give the body Hunter's illness after enough cycles.
+                self.SlugCatClass = SlugcatStats.Name.White;
             }
         }
 

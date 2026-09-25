@@ -413,7 +413,8 @@ namespace Hunted.Game
                 }
                 else if (IsPursuer(self.abstractCreature))
                 {
-                    s.Learner.Reward(-1f, "was hurt for " + damage.ToString("0.0"));
+                    // Proportionate: a rock that barely scratches is not a spear in the chest.
+                    s.Learner.Reward(-Mathf.Clamp(damage, 0.25f, 1f), "was hurt for " + damage.ToString("0.00"));
                 }
             }
             catch (Exception e)
