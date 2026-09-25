@@ -409,7 +409,8 @@ namespace Hunted.Game
                 Creature attacker = source?.owner is Weapon weapon ? weapon.thrownBy : source?.owner as Creature;
                 if (self is Player victim && !victim.isNPC && attacker != null && IsPursuer(attacker.abstractCreature))
                 {
-                    s.Learner.Reward(damage >= 1f ? 2f : 1f, "hit the player for " + damage.ToString("0.0"), throwOutcome: source?.owner is Weapon);
+                    // A spear in the chest is worth two, a stunning rock half a point.
+                    s.Learner.Reward(damage >= 1f ? 2f : damage >= 0.5f ? 1f : 0.5f, "hit the player for " + damage.ToString("0.00"), throwOutcome: source?.owner is Weapon);
                 }
                 else if (IsPursuer(self.abstractCreature))
                 {
