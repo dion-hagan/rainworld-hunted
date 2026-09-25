@@ -7,9 +7,10 @@ on:
 
 jobs:
   core-tests:
-    # The Core half of the mod has no game dependency, so its tests run anywhere.
+    # The Core half of the mod has no game dependency. The test project targets
+    # net472 (same as the mod), which needs a Windows runner or Mono to execute.
     # (Tests that need an installed copy of Rain World skip themselves.)
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

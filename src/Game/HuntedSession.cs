@@ -32,6 +32,8 @@ namespace Hunted.Game
         public AbstractCreature Creature { get; private set; }
         public bool Resolved { get; private set; }
         public bool OverlayVisible;
+        /// <summary>What the slugcat body has learned about fighting this player.</summary>
+        public PursuerLearner Learner { get; private set; }
 
         public bool PursuerDiedThisCycle { get; private set; }
         public bool PlayerKilledByPursuer { get; private set; }
@@ -66,6 +68,7 @@ namespace Hunted.Game
                 FlushLog("new campaign");
             }
             OverlayVisible = Options.Instance == null || Options.Instance.ShowOverlay.Value;
+            Learner = new PursuerLearner(game, saveState);
         }
 
         public static void Start(RainWorldGame game, SaveState saveState)
@@ -88,6 +91,14 @@ namespace Hunted.Game
 
         public static void End()
         {
+            try
+            {
+                Current?.Learner.Save();
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("Could not save learned tactics at session end", e);
+            }
             Current = null;
         }
 
@@ -155,6 +166,7 @@ namespace Hunted.Game
             {
                 return;
             }
+            Learner.Advance();
             if (graceTicks > 0)
             {
                 graceTicks--;
@@ -427,6 +439,7 @@ namespace Hunted.Game
                 frozenSnapshot = Snapshot();
             }
             Despawn();
+            Learner.Save();
         }
 
         private int TargetRoom(World world, AbstractCreature player)
@@ -625,6 +638,7 @@ namespace Hunted.Game
             {
                 PlayerKilledByPursuer = true;
                 HuntedLog.Info("The Pursuer killed the player.");
+                Learner.Reward(3f, "killed the player");
             }
         }
 
@@ -650,6 +664,7 @@ namespace Hunted.Game
             if (Input.GetKeyDown(o.KeyKill.Value)) Safe("kill", TestKill);
             if (Input.GetKeyDown(o.KeyOverlay.Value)) OverlayVisible = !OverlayVisible;
             if (Input.GetKeyDown(o.KeyReset.Value)) Safe("reset", TestReset);
+            if (Input.GetKeyDown(o.KeyForget.Value)) Safe("forget", () => Learner.Forget());
         }
 
         private static void Safe(string name, Action action)

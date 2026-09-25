@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Hunted.Core;
 using MoreSlugcats;
 using Noise;
 using RWCustom;
@@ -69,6 +70,12 @@ namespace Hunted.Game
         private int senseCooldown;
         private int fleeHold;
         private int errorLogCooldown;
+
+        // Learned tactics: one decision per TacticHoldTicks while armed and engaging.
+        private const int TacticHoldTicks = 20;
+        private Tactic tactic = Tactic.Throw;
+        private int tacticTicks;
+        private readonly float[] situation = new float[PursuerLearner.FeatureCount];
         private readonly List<IntVector2> previousAttackPositions = new List<IntVector2>();
         private readonly List<IntVector2> targetArea = new List<IntVector2>(50);
         private readonly List<IntVector2> floodFill = new List<IntVector2>(50);
@@ -99,6 +106,15 @@ namespace Hunted.Game
             get
             {
                 string s = mode.ToString();
+                if (mode == Mode.Engage)
+                {
+                    s += "/" + tactic;
+                    PursuerLearner learner = HuntedSession.Current?.Learner;
+                    if (learner != null && learner.Enabled && Options.Instance != null && Options.Instance.DebugHotkeys.Value)
+                    {
+                        s += " [" + learner.Policy.Describe() + "]";
+                    }
+                }
                 if (target != null)
                 {
                     s += target.VisualContact ? " (sees you)" : " (last seen " + (target.TicksSinceSeen / 40) + "s ago)";
@@ -504,16 +520,77 @@ namespace Hunted.Game
                 }
                 return target.BestGuessForPosition();
             }
-            FindAttackPosition(target);
-            if (throwAtTarget == 0 && turnDelay == 0 && victim.room == cat.room)
+            ChooseTactic(victim, held);
+            WorldCoordinate coord;
+            switch (tactic)
+            {
+                case Tactic.CloseIn:
+                    coord = target.BestGuessForPosition();
+                    break;
+                case Tactic.Wait:
+                    coord = creature.pos;
+                    break;
+                default:
+                    FindAttackPosition(target);
+                    coord = attackPos;
+                    break;
+            }
+            if (tactic != Tactic.Reposition && tactic != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && victim.room == cat.room)
             {
                 int chunk = UnityEngine.Random.Range(0, victim.bodyChunks.Length);
                 if (GoodAttackPos(victim.bodyChunks[chunk]))
                 {
                     throwAtTarget = (int)Mathf.Sign(victim.bodyChunks[chunk].pos.x - cat.firstChunk.pos.x);
+                    HuntedSession.Current?.Learner.NoteThrow();
                 }
             }
-            return attackPos;
+            return coord;
+        }
+
+        /// <summary>
+        /// Every TacticHoldTicks, asks the learner which tactic fits the situation. With
+        /// learning off (or no session) the Pursuer always throws, which is the old behaviour.
+        /// </summary>
+        private void ChooseTactic(Creature victim, float held)
+        {
+            if (tacticTicks-- > 0)
+            {
+                return;
+            }
+            tacticTicks = TacticHoldTicks;
+            PursuerLearner learner = HuntedSession.Current?.Learner;
+            if (learner == null || !learner.Enabled)
+            {
+                tactic = Tactic.Throw;
+                return;
+            }
+            Vector2 me = cat.mainBodyChunk.pos;
+            Vector2 them = victim.mainBodyChunk.pos;
+            Vector2 offset = them - me;
+            bool armed = victim is Player p && p.grasps != null && System.Array.Exists(p.grasps, g => g != null && g.grabbed is Weapon);
+            int i = 0;
+            situation[i++] = Mathf.Clamp(offset.x / 400f, -1f, 1f);
+            situation[i++] = Mathf.Clamp(offset.y / 400f, -1f, 1f);
+            situation[i++] = Mathf.Clamp01(offset.magnitude / 400f);
+            situation[i++] = target.VisualContact ? 1f : 0f;
+            situation[i++] = Mathf.Clamp01(target.TicksSinceSeen / 400f);
+            situation[i++] = offset.y > 20f ? 1f : 0f;
+            situation[i++] = armed ? 1f : 0f;
+            situation[i++] = Mathf.Clamp01(victim.mainBodyChunk.vel.magnitude / 10f);
+            situation[i++] = Mathf.Clamp01(held / 3f);
+            situation[i++] = threatTracker.Utility();
+            situation[i++] = GoodAttackPos(victim.mainBodyChunk) ? 1f : 0f;
+            situation[i++] = HeldWeapon() is ScavengerBomb ? 1f : 0f;
+            tactic = learner.Choose(situation);
+            if (tactic == Tactic.Reposition)
+            {
+                // Give up the current spot: FindAttackPosition keeps attackPos for up to 300 ticks
+                // and never penalises the spot it stands on, so without this Reposition would
+                // just be Wait without the throw.
+                changeAttackPositionDelay = 0;
+                testThrowPos = creature.pos;
+                previousAttackPositions.Insert(Math.Min(1, previousAttackPositions.Count), attackPos.Tile);
+            }
         }
 
         private void ConsiderThrowingAtThreat()

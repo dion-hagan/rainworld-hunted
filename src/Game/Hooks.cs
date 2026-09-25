@@ -47,6 +47,10 @@ namespace Hunted.Game
             On.Player.Die += Player_Die;
             On.SocialEventRecognizer.Killing += SocialEventRecognizer_Killing;
 
+            // Rewards for the slugcat body's learned tactics
+            On.Creature.Violence += Creature_Violence;
+            On.Weapon.HitWall += Weapon_HitWall;
+
             // Looks and HUD
             On.ScavengerGraphics.ctor += ScavengerGraphics_ctor;
             On.HUD.HUD.InitSinglePlayerHud += HUD_InitSinglePlayerHud;
@@ -387,6 +391,51 @@ namespace Hunted.Game
             if (wasAlive && killer != null && self is Scavenger && !IsPursuer(self.abstractCreature) && IsPursuer(killer))
             {
                 HuntedSession.Current.OnScavengerKilledByPursuer(self);
+            }
+        }
+
+        // ---------------------------------------------------------------- learning rewards
+
+        private static void Creature_Violence(On.Creature.orig_Violence orig, Creature self, BodyChunk source, Vector2? directionAndMomentum, BodyChunk hitChunk, PhysicalObject.Appendage.Pos hitAppendage, Creature.DamageType type, float damage, float stunBonus)
+        {
+            orig(self, source, directionAndMomentum, hitChunk, hitAppendage, type, damage, stunBonus);
+            HuntedSession s = HuntedSession.Current;
+            if (s == null || damage <= 0f)
+            {
+                return;
+            }
+            try
+            {
+                Creature attacker = source?.owner is Weapon weapon ? weapon.thrownBy : source?.owner as Creature;
+                if (self is Player victim && !victim.isNPC && attacker != null && IsPursuer(attacker.abstractCreature))
+                {
+                    s.Learner.Reward(damage >= 1f ? 2f : 1f, "hit the player for " + damage.ToString("0.0"), throwOutcome: source?.owner is Weapon);
+                }
+                else if (IsPursuer(self.abstractCreature))
+                {
+                    s.Learner.Reward(-1f, "was hurt for " + damage.ToString("0.0"));
+                }
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("Violence hook failed", e);
+            }
+        }
+
+        private static void Weapon_HitWall(On.Weapon.orig_HitWall orig, Weapon self)
+        {
+            orig(self);
+            try
+            {
+                HuntedSession s = HuntedSession.Current;
+                if (s != null && self.thrownBy != null && IsPursuer(self.thrownBy.abstractCreature))
+                {
+                    s.Learner.Reward(-0.2f, "throw hit a wall", throwOutcome: true);
+                }
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("HitWall hook failed", e);
             }
         }
 
