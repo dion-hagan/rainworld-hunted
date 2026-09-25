@@ -168,6 +168,15 @@ namespace Hunted.Game
                 AbstractCreature player = TargetPlayer();
                 cachedRoomsAway = Creature != null && player != null && Creature.world == game.world ? WorldRooms.Distance(game.world, Creature.pos.room, player.pos.room) : -1;
             }
+        }
+
+        /// <summary>Once per rendered frame (RawUpdate): key presses must be sampled here, not at the 40Hz tick.</summary>
+        public void FrameUpdate()
+        {
+            if (game.GamePaused)
+            {
+                return;
+            }
             Hotkeys();
         }
 
@@ -193,6 +202,11 @@ namespace Hunted.Game
             Despawn();
             AbstractCreature player = TargetPlayer();
             int playerRoom = player != null ? player.pos.room : -1;
+            if (playerRoom < 0 && saveState.denPosition != null)
+            {
+                AbstractRoom den = world.GetAbstractRoom(saveState.denPosition);
+                playerRoom = den != null ? den.index : -1;
+            }
             AbstractRoom room = WorldRooms.PickSpawnRoom(world, preferred, playerRoom, minFromPlayer, false);
             if (room == null)
             {

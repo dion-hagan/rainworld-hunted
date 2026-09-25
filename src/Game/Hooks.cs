@@ -19,6 +19,7 @@ namespace Hunted.Game
             On.RainWorldGame.ctor += RainWorldGame_ctor;
             On.RainWorldGame.ShutDownProcess += RainWorldGame_ShutDownProcess;
             On.RainWorldGame.Update += RainWorldGame_Update;
+            On.RainWorldGame.RawUpdate += RainWorldGame_RawUpdate;
             On.OverWorld.WorldLoaded += OverWorld_WorldLoaded;
 
             // Saving
@@ -121,6 +122,24 @@ namespace Hunted.Game
             catch (Exception e)
             {
                 HuntedLog.Error("Update hook failed", e);
+            }
+        }
+
+        private static void RainWorldGame_RawUpdate(On.RainWorldGame.orig_RawUpdate orig, RainWorldGame self, float dt)
+        {
+            orig(self, dt);
+            HuntedSession s = HuntedSession.Current;
+            if (s == null || s.game != self)
+            {
+                return;
+            }
+            try
+            {
+                s.FrameUpdate();
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("RawUpdate hook failed", e);
             }
         }
 
@@ -242,6 +261,11 @@ namespace Hunted.Game
             if (!IsPursuer(self.creature))
             {
                 return orig(self, dRelation);
+            }
+            AbstractCreature target = dRelation.trackerRep?.representedCreature;
+            if (target != null && target.state != null && target.state.dead)
+            {
+                return new CreatureTemplate.Relationship(CreatureTemplate.Relationship.Type.Ignores, 0f);
             }
             if (dRelation.state is ScavengerAI.ScavengerTrackState state)
             {

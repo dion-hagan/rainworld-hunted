@@ -18,7 +18,22 @@ namespace Hunted.Game
             "VS", "LM", "RM", "UG", "CL", "HR", "DM", "LC", "OE", "MS",
         };
 
+        private static readonly Dictionary<string, ShelterGraph> cache = new Dictionary<string, ShelterGraph>();
+
+        /// <summary>The graph for a slugcat, built once per game launch (the mod list cannot change without a restart).</summary>
         public static ShelterGraph Build(SlugcatStats.Name slugcat)
+        {
+            string key = slugcat.value;
+            if (cache.TryGetValue(key, out ShelterGraph cached))
+            {
+                return cached;
+            }
+            ShelterGraph graph = BuildUncached(slugcat);
+            cache[key] = graph;
+            return graph;
+        }
+
+        private static ShelterGraph BuildUncached(SlugcatStats.Name slugcat)
         {
             SlugcatStats.Timeline timeline = SlugcatStats.SlugcatToTimeline(slugcat);
             string timelineName = timeline?.value ?? slugcat.value;
