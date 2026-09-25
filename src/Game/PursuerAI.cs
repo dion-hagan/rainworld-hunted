@@ -507,8 +507,9 @@ namespace Hunted.Game
         private WorldCoordinate EngageUpdate(float held)
         {
             Creature victim = target.representedCreature.realizedCreature;
-            if (victim == null)
+            if (victim == null || victim.room != cat.room)
             {
+                // Out of the room: no tactic decisions on positions that belong to another room.
                 return target.BestGuessForPosition();
             }
             if (held < 0.5f)
