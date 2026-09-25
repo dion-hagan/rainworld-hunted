@@ -409,7 +409,7 @@ namespace Hunted.Game
                 Creature attacker = source?.owner is Weapon weapon ? weapon.thrownBy : source?.owner as Creature;
                 if (self is Player victim && !victim.isNPC && attacker != null && IsPursuer(attacker.abstractCreature))
                 {
-                    s.Learner.Reward(damage >= 1f ? 2f : 1f, "hit the player for " + damage.ToString("0.0"));
+                    s.Learner.Reward(damage >= 1f ? 2f : 1f, "hit the player for " + damage.ToString("0.0"), throwOutcome: source?.owner is Weapon);
                 }
                 else if (IsPursuer(self.abstractCreature))
                 {
@@ -425,10 +425,17 @@ namespace Hunted.Game
         private static void Weapon_HitWall(On.Weapon.orig_HitWall orig, Weapon self)
         {
             orig(self);
-            HuntedSession s = HuntedSession.Current;
-            if (s != null && self.thrownBy != null && IsPursuer(self.thrownBy.abstractCreature))
+            try
             {
-                s.Learner.Reward(-0.2f, "throw hit a wall");
+                HuntedSession s = HuntedSession.Current;
+                if (s != null && self.thrownBy != null && IsPursuer(self.thrownBy.abstractCreature))
+                {
+                    s.Learner.Reward(-0.2f, "throw hit a wall", throwOutcome: true);
+                }
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("HitWall hook failed", e);
             }
         }
 

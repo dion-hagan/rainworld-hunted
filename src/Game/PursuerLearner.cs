@@ -7,17 +7,21 @@ namespace Hunted.Game
 {
     /// <summary>
     /// The learning half of the slugcat Pursuer: owns the <see cref="TacticPolicy"/>, turns
-    /// game events into rewards and persists what was learned per save slot and campaign.
+    /// game events into rewards and persists what was learned per save slot and slugcat.
     /// Learned tactics deliberately live outside the death-persistent save data, so they
-    /// survive deaths and quits instead of reverting with karma.
+    /// survive deaths, quits and new campaigns on the same slot: they describe the player,
+    /// not the run.
     /// </summary>
     public sealed class PursuerLearner
     {
         public const int FeatureCount = 12;
+        private const string FilePrefix = "dion_hunted_tactics_";
 
         public TacticPolicy Policy { get; private set; }
         public int Tick { get; private set; }
-        public bool Enabled => Options.Instance == null || Options.Instance.AdaptiveTactics.Value;
+
+        /// <summary>Learning only applies to the slugcat body, and only when the option is on.</summary>
+        public bool Enabled => (Options.Instance == null || Options.Instance.AdaptiveTactics.Value) && PursuerBodies.Selected() == PursuerBody.Slugcat;
 
         private readonly string path;
         private readonly int seed;
@@ -27,16 +31,21 @@ namespace Hunted.Game
         {
             seed = saveState.seed;
             string slot = game.rainWorld.options.saveSlot.ToString();
-            string campaign = saveState.saveStateNumber != null ? saveState.saveStateNumber.value : "unknown";
-            path = Path.Combine(Path.Combine(Custom.RootFolderDirectory(), "ModConfigs"), "dion_hunted_tactics_" + slot + "_" + campaign + ".txt");
+            string slugcat = saveState.saveStateNumber != null ? saveState.saveStateNumber.value : "unknown";
+            path = Path.Combine(Folder(), FilePrefix + slot + "_" + slugcat + ".txt");
             Load();
+        }
+
+        private static string Folder()
+        {
+            return Path.Combine(Custom.RootFolderDirectory(), "ModConfigs");
         }
 
         private void Load()
         {
             try
             {
-                if (File.Exists(path) && TacticPolicy.TryParse(File.ReadAllText(path), seed, out TacticPolicy loaded))
+                if (File.Exists(path) && TacticPolicy.TryParse(File.ReadAllText(path), FeatureCount, seed, out TacticPolicy loaded))
                 {
                     Policy = loaded;
                     HuntedLog.Info("Loaded learned tactics: " + loaded.Decisions + " decisions, " + loaded.Rewards + " rewards, total " + loaded.TotalReward.ToString("0.0") + ".");
@@ -58,6 +67,7 @@ namespace Hunted.Game
             }
             try
             {
+                Policy.Flush();
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(path, Policy.Serialize());
                 dirty = false;
@@ -68,13 +78,36 @@ namespace Hunted.Game
             }
         }
 
-        /// <summary>Throws away everything learned for this campaign.</summary>
+        /// <summary>Throws away everything learned for this save slot and slugcat.</summary>
         public void Forget()
         {
             Policy = new TacticPolicy(FeatureCount, seed);
             dirty = true;
             Save();
             HuntedLog.Info("[test] Learned tactics reset.");
+        }
+
+        /// <summary>Deletes every learned-tactics file, for the Remix button (usable from the main menu).</summary>
+        public static int ForgetAll()
+        {
+            int deleted = 0;
+            try
+            {
+                if (Directory.Exists(Folder()))
+                {
+                    foreach (string file in Directory.GetFiles(Folder(), FilePrefix + "*.txt"))
+                    {
+                        File.Delete(file);
+                        deleted++;
+                    }
+                }
+                HuntedLog.Info("Deleted " + deleted + " learned-tactics file(s).");
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("Could not delete learned tactics", e);
+            }
+            return deleted;
         }
 
         public void Advance()
@@ -88,20 +121,20 @@ namespace Hunted.Game
             return Policy.Choose(features, Tick);
         }
 
-        public void Reward(float value, string why)
+        public void NoteThrow()
+        {
+            Policy.NoteThrow();
+        }
+
+        public void Reward(float value, string why, bool throwOutcome = false)
         {
             if (!Enabled)
             {
                 return;
             }
-            Policy.Reward(value, Tick);
+            Policy.Reward(value, Tick, throwOutcome);
             dirty = true;
             HuntedLog.Info("Tactic reward " + value.ToString("+0.0;-0.0") + " (" + why + ")");
-        }
-
-        public string Summary()
-        {
-            return Policy.Decisions + " decisions, reward " + Policy.TotalReward.ToString("0.0");
         }
     }
 }

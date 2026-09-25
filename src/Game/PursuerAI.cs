@@ -109,6 +109,11 @@ namespace Hunted.Game
                 if (mode == Mode.Engage)
                 {
                     s += "/" + tactic;
+                    PursuerLearner learner = HuntedSession.Current?.Learner;
+                    if (learner != null && learner.Enabled && Options.Instance != null && Options.Instance.DebugHotkeys.Value)
+                    {
+                        s += " [" + learner.Policy.Describe() + "]";
+                    }
                 }
                 if (target != null)
                 {
@@ -536,6 +541,7 @@ namespace Hunted.Game
                 if (GoodAttackPos(victim.bodyChunks[chunk]))
                 {
                     throwAtTarget = (int)Mathf.Sign(victim.bodyChunks[chunk].pos.x - cat.firstChunk.pos.x);
+                    HuntedSession.Current?.Learner.NoteThrow();
                 }
             }
             return coord;
@@ -576,6 +582,15 @@ namespace Hunted.Game
             situation[i++] = GoodAttackPos(victim.mainBodyChunk) ? 1f : 0f;
             situation[i++] = HeldWeapon() is ScavengerBomb ? 1f : 0f;
             tactic = learner.Choose(situation);
+            if (tactic == Tactic.Reposition)
+            {
+                // Give up the current spot: FindAttackPosition keeps attackPos for up to 300 ticks
+                // and never penalises the spot it stands on, so without this Reposition would
+                // just be Wait without the throw.
+                changeAttackPositionDelay = 0;
+                testThrowPos = creature.pos;
+                previousAttackPositions.Insert(Math.Min(1, previousAttackPositions.Count), attackPos.Tile);
+            }
         }
 
         private void ConsiderThrowingAtThreat()

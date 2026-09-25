@@ -52,35 +52,92 @@ namespace Hunted.Tests
         }
 
         [Fact]
-        public void PolicyPrefersTheRewardedTacticInThatSituation()
+        public void PolicyLearnsFromSparseRewards()
         {
-            var policy = new TacticPolicy(2, 3) { Epsilon = 0f, LearningRate = 0.05f };
+            // As in the game: most decisions get nothing, and only some situations ever pay.
+            var policy = new TacticPolicy(2, 3) { LearningRate = 0.05f, RewardWindowTicks = 80 };
             float[] near = { 1f, 0f };
             float[] far = { 0f, 1f };
             int tick = 0;
-            for (int i = 0; i < 300; i++)
+            for (int i = 0; i < 400; i++)
             {
-                // near the player, closing in gets punished and waiting pays off
+                policy.Epsilon = i < 100 ? 1f : 0.2f;   // explore first, then mostly exploit
                 Tactic chosen = policy.Choose(near, tick);
-                policy.Reward(chosen == Tactic.Wait ? 1f : -1f, tick + 10);
-                tick += 100;
-                // far away, throwing pays off
+                if (chosen == Tactic.Wait && i % 2 == 0)
+                {
+                    policy.Reward(1f, tick + 10);          // waiting near the player sometimes pays
+                }
+                else if (chosen == Tactic.CloseIn)
+                {
+                    policy.Reward(-1f, tick + 10);         // closing in gets you speared
+                }
+                tick += 100;                                // the previous decision expires untouched otherwise
                 chosen = policy.Choose(far, tick);
-                policy.Reward(chosen == Tactic.Throw ? 1f : -1f, tick + 10);
+                if (chosen == Tactic.Throw && i % 3 == 0)
+                {
+                    policy.Reward(1f, tick + 10);          // throwing from far away sometimes hits
+                }
                 tick += 100;
-                // an unrewarded tactic must still be explored: rotate through them while learning
-                if (i < 40)
-                {
-                    policy.Epsilon = 1f;
-                }
-                else
-                {
-                    policy.Epsilon = 0f;
-                }
             }
             policy.Epsilon = 0f;
             Assert.Equal(Tactic.Wait, policy.Choose(near, tick));
             Assert.Equal(Tactic.Throw, policy.Choose(far, tick + 100));
+        }
+
+        [Fact]
+        public void UnrewardedTacticsConvergeToZeroInsteadOfStayingRandom()
+        {
+            var policy = new TacticPolicy(1, 11) { Epsilon = 1f, LearningRate = 0.1f, RewardWindowTicks = 80 };
+            float[] x = { 1f };
+            int tick = 0;
+            for (int i = 0; i < 600; i++)
+            {
+                Tactic chosen = policy.Choose(x, tick);
+                if (chosen == Tactic.Throw)
+                {
+                    policy.Reward(-0.2f, tick + 5, throwOutcome: false);   // only Throw ever gets a signal, and a bad one
+                }
+                tick += 100;
+            }
+            policy.Flush();
+            float[] scores = policy.Evaluate(x);
+            Assert.True(scores[(int)Tactic.Throw] < -0.1f, "throw " + scores[(int)Tactic.Throw]);
+            for (int t = 1; t < TacticPolicy.TacticCount; t++)
+            {
+                Assert.True(System.Math.Abs(scores[t]) < 0.05f, ((Tactic)t) + " stayed at " + scores[t]);
+            }
+        }
+
+        [Fact]
+        public void ThrowOutcomesGoOnlyToTheDecisionThatThrew()
+        {
+            // Twin policies share seed, so they start identical and only differ by what was credited.
+            float[] a = { 1f };
+            float[] b = { 0f };
+            TacticPolicy Make() => new TacticPolicy(1, 5) { Epsilon = 1f, LearningRate = 0.5f, RewardWindowTicks = 80 };
+
+            var nobodyThrew = Make();            // a throw outcome with no recorded throw credits nobody
+            nobodyThrew.Choose(a, 0); nobodyThrew.Choose(b, 20);
+            nobodyThrew.Reward(2f, 30, throwOutcome: true);
+            nobodyThrew.Flush();
+
+            var noReward = Make();
+            noReward.Choose(a, 0); noReward.Choose(b, 20);
+            noReward.Flush();
+            Assert.Equal(noReward.Evaluate(a), nobodyThrew.Evaluate(a));
+
+            var firstThrew = Make();             // credited to the decision made at tick 0 (situation a)
+            firstThrew.Choose(a, 0); firstThrew.NoteThrow(); firstThrew.Choose(b, 20);
+            firstThrew.Reward(2f, 30, throwOutcome: true);
+            firstThrew.Flush();
+
+            var secondThrew = Make();            // credited to the decision made at tick 20 (situation b)
+            secondThrew.Choose(a, 0); secondThrew.Choose(b, 20); secondThrew.NoteThrow();
+            secondThrew.Reward(2f, 30, throwOutcome: true);
+            secondThrew.Flush();
+
+            Assert.NotEqual(noReward.Evaluate(a), firstThrew.Evaluate(a));
+            Assert.NotEqual((float[])firstThrew.Evaluate(a).Clone(), secondThrew.Evaluate(a));
         }
 
         [Fact]
@@ -90,12 +147,13 @@ namespace Hunted.Tests
             float[] x = { 1f };
             float[] before = (float[])policy.Evaluate(x).Clone();
             policy.Choose(x, 0);
-            policy.Reward(5f, 1000); // far outside the window
+            policy.Reward(5f, 1000); // far outside the window: the decision expires with zero credit
             float[] after = (float[])policy.Evaluate(x).Clone();
-            Assert.Equal(before, after);
+            Assert.NotEqual(before, after);   // trained toward 0, not toward 5
 
             policy.Choose(x, 1000);
             policy.Reward(5f, 1040); // inside
+            policy.Flush();
             float[] trained = policy.Evaluate(x);
             Assert.NotEqual(after, trained);
         }
@@ -107,14 +165,16 @@ namespace Hunted.Tests
             float[] x = { 0.1f, 0.5f, 0.9f, 0.3f };
             policy.Choose(x, 0);
             policy.Reward(1f, 5);
+            policy.Flush();
             float[] before = (float[])policy.Evaluate(x).Clone();
 
             string text = policy.Serialize();
-            Assert.True(TacticPolicy.TryParse(text, 9, out TacticPolicy back), text);
+            Assert.True(TacticPolicy.TryParse(text, 4, 9, out TacticPolicy back), text);
             Assert.Equal(1, back.Decisions);
             Assert.Equal(1, back.Rewards);
             Assert.Equal(before, back.Evaluate(x));
-            Assert.False(TacticPolicy.TryParse("v=0|net=nope", 9, out _));
+            Assert.False(TacticPolicy.TryParse(text, 5, 9, out _), "a network with the wrong input count must be rejected");
+            Assert.False(TacticPolicy.TryParse("v=0|net=nope", 4, 9, out _));
         }
     }
 }

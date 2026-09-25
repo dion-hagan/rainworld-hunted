@@ -10,7 +10,7 @@ namespace Hunted.Core
     {
         /// <summary>Take a throwing position and throw as soon as the line is good (the pre-learning behaviour).</summary>
         Throw = 0,
-        /// <summary>Move to a fresh throwing position without throwing from the current one.</summary>
+        /// <summary>Give up the current throwing position for a fresh one, without throwing on the way.</summary>
         Reposition = 1,
         /// <summary>Walk straight at the player.</summary>
         CloseIn = 2,
@@ -21,9 +21,10 @@ namespace Hunted.Core
     /// <summary>
     /// A contextual bandit over <see cref="Tactic"/>: a <see cref="TinyNet"/> estimates the
     /// reward of each tactic for the current situation, the policy picks the best one most
-    /// of the time and a random one otherwise, and rewards that arrive within a short window
-    /// train the decisions that preceded them. One-step Q-learning, which is enough for a
-    /// game where a throw's consequence is known within a second.
+    /// of the time and a random one otherwise, and every decision is trained exactly once,
+    /// when it leaves the reward window, toward the credit it collected in that window
+    /// (zero when nothing happened). One-step Q-learning, which is enough for a game where
+    /// a throw's consequence is known within a second.
     /// </summary>
     public sealed class TacticPolicy
     {
@@ -43,13 +44,15 @@ namespace Hunted.Core
         private readonly TinyNet net;
         private readonly Random rng;
         private readonly float[] scores = new float[TacticCount];
-        private readonly List<Decision> history = new List<Decision>();
+        private readonly List<Decision> pending = new List<Decision>();
+        private Decision lastThrow;
 
-        private struct Decision
+        private sealed class Decision
         {
             public float[] Features;
             public int Tactic;
             public int Tick;
+            public float Credit;
         }
 
         public TacticPolicy(int features, int seed) : this(new TinyNet(features, 16, TacticCount, seed), seed)
@@ -69,7 +72,7 @@ namespace Hunted.Core
             return net.Forward(features, scores);
         }
 
-        /// <summary>Picks a tactic for the situation and remembers the decision so a later reward can train it.</summary>
+        /// <summary>Picks a tactic for the situation and remembers the decision so later rewards can train it.</summary>
         public Tactic Choose(float[] features, int tick)
         {
             if (features == null || features.Length != Features)
@@ -93,36 +96,81 @@ namespace Hunted.Core
                     }
                 }
             }
-            history.Add(new Decision { Features = (float[])features.Clone(), Tactic = choice, Tick = tick });
+            pending.Add(new Decision { Features = (float[])features.Clone(), Tactic = choice, Tick = tick });
             Decisions++;
-            Forget(tick);
+            Expire(tick);
             return (Tactic)choice;
         }
 
+        /// <summary>Records that the most recent decision is the one that threw, so throw outcomes go to it alone.</summary>
+        public void NoteThrow()
+        {
+            if (pending.Count > 0)
+            {
+                lastThrow = pending[pending.Count - 1];
+            }
+        }
+
         /// <summary>
-        /// Credits <paramref name="value"/> to every decision made within the reward window before
-        /// <paramref name="tick"/>, discounted by age, and trains the network toward it.
+        /// Adds <paramref name="value"/> to the credit of every decision made within the reward
+        /// window before <paramref name="tick"/>, discounted by age. A throw outcome (a hit, a
+        /// spear in a wall) is credited only to the decision that threw.
         /// </summary>
-        public void Reward(float value, int tick)
+        public void Reward(float value, int tick, bool throwOutcome = false)
         {
             Rewards++;
             TotalReward += value;
-            for (int i = history.Count - 1; i >= 0; i--)
+            if (throwOutcome)
             {
-                int age = tick - history[i].Tick;
-                if (age < 0 || age > RewardWindowTicks)
+                if (lastThrow != null && pending.Contains(lastThrow))
                 {
-                    continue;
+                    lastThrow.Credit += value;
                 }
-                float credit = value * (1f - (float)age / RewardWindowTicks);
-                net.Train(history[i].Features, history[i].Tactic, credit, LearningRate);
             }
-            Forget(tick);
+            else
+            {
+                for (int i = 0; i < pending.Count; i++)
+                {
+                    int age = tick - pending[i].Tick;
+                    if (age >= 0 && age <= RewardWindowTicks)
+                    {
+                        pending[i].Credit += value * (1f - (float)age / RewardWindowTicks);
+                    }
+                }
+            }
+            Expire(tick);
         }
 
-        private void Forget(int tick)
+        /// <summary>Trains and drops every decision whose window has closed.</summary>
+        private void Expire(int tick)
         {
-            history.RemoveAll(d => tick - d.Tick > RewardWindowTicks);
+            for (int i = pending.Count - 1; i >= 0; i--)
+            {
+                if (tick - pending[i].Tick > RewardWindowTicks)
+                {
+                    Learn(pending[i]);
+                    pending.RemoveAt(i);
+                }
+            }
+        }
+
+        /// <summary>Trains every pending decision now, for example before the session ends.</summary>
+        public void Flush()
+        {
+            foreach (Decision d in pending)
+            {
+                Learn(d);
+            }
+            pending.Clear();
+        }
+
+        private void Learn(Decision d)
+        {
+            net.Train(d.Features, d.Tactic, d.Credit, LearningRate);
+            if (ReferenceEquals(d, lastThrow))
+            {
+                lastThrow = null;
+            }
         }
 
         /// <summary>One line for the overlay: the four estimates for the last evaluated situation.</summary>
@@ -149,7 +197,8 @@ namespace Hunted.Core
                 + "|net=" + net.Serialize();
         }
 
-        public static bool TryParse(string text, int seed, out TacticPolicy policy)
+        /// <summary>Parses a saved policy; rejects one whose network does not match <paramref name="features"/> inputs.</summary>
+        public static bool TryParse(string text, int features, int seed, out TacticPolicy policy)
         {
             policy = null;
             if (string.IsNullOrEmpty(text))
@@ -183,7 +232,7 @@ namespace Hunted.Core
                         break;
                 }
             }
-            if (!versionOk || net == null || net.Outputs != TacticCount)
+            if (!versionOk || net == null || net.Inputs != features || net.Outputs != TacticCount)
             {
                 return false;
             }

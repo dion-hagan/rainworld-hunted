@@ -14,7 +14,7 @@ any story game. Watch the red tracker line at the top of the screen and
 | **F9** Kill | Kills it where it stands. It drops its gear; the death/respawn rules apply at the next sleep. |
 | **F10** Overlay | Toggles the tracker line. |
 | **F11** Reset | Despawns it and places it far away again, exactly like the start of a new campaign. |
-| **F12** Forget | Throws away the tactics the slugcat body has learned about you in this campaign. |
+| **F12** Forget | Throws away the tactics the slugcat body has learned about you on this save slot and slugcat (the Remix tab has a button that clears every slot). |
 
 The keys can be rebound in the same Remix tab.
 
@@ -36,10 +36,13 @@ While it is armed and engaging, the mode also shows the **tactic** it picked
 tactics** on, a small network chooses the tactic every half second from the
 situation (distance, height, whether you are armed or moving, its own weapon and
 threat) and is trained by what happens next: a hit on you is +1 (+2 for heavy
-damage), killing you +3, a throw into a wall -0.2, getting hurt -1. Every reward
-is logged as `Tactic reward`. What it learns is saved per save slot and campaign
-in `ModConfigs/dion_hunted_tactics_<slot>_<campaign>.txt`, outside the death-
-persistent save so it survives deaths and quits; F12 resets it. With the option
+damage), killing you +3, a throw into a wall -0.2 (hits and wall throws are credited only to the decision that threw), getting hurt -1. Decisions that nothing followed are trained toward zero when their two-second window closes. Every reward
+is logged as `Tactic reward`. What it learns is saved per save slot and slugcat in
+`ModConfigs/dion_hunted_tactics_<slot>_<slugcat>.txt`, outside the death-
+persistent save, so it survives deaths, quits and new campaigns on that slot: it
+describes you, not the run. F12 resets it, and **Remix → Hunted → Forget learned
+tactics** deletes every slot. With testing hotkeys on, the overlay also shows the
+four estimated rewards behind the choice, so you can watch them move. With the option
 off it always throws, which is the old behaviour.
 
 ## Reading the overlay
