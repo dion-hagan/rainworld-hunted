@@ -209,9 +209,56 @@ namespace Hunted.Tests
                 tick += 100;
             }
             policy.Flush();
-            Assert.True(policy.Epsilon < peak, "still exploring at " + policy.Epsilon);
+            Assert.True(policy.Epsilon < settled + 0.03f, "still exploring at " + policy.Epsilon);
             policy.FixedEpsilon = 0f;
             Assert.Equal(Tactic.Throw, policy.Choose(x, tick));
+        }
+
+        [Fact]
+        public void OneBadOutcomeAtTheFloorDoesNotReopenExploration()
+        {
+            // A realistic stationary world is noisy: Wait pays only half the time, so the estimates
+            // are always somewhat wrong and the baseline surprise is well above zero.
+            var policy = new TacticPolicy(1, 8) { LearningRate = 0.05f, EpsilonHalfLife = 50 };
+            var world = new System.Random(3);
+            float[] x = { 1f };
+            int tick = 0;
+            for (int i = 0; i < 800; i++)
+            {
+                Tactic chosen = policy.Choose(x, tick);
+                if (chosen == Tactic.Wait && world.Next(2) == 0) policy.Reward(1f, tick + 10);
+                tick += 100;
+            }
+            policy.Flush();
+            Assert.True(policy.Epsilon < 0.08f, "settled at " + policy.Epsilon);
+
+            // One hurt lands on the last few decisions, as in a fight (decisions 20 ticks apart, window 80).
+            for (int i = 0; i < 4; i++) { policy.Choose(x, tick); tick += 20; }
+            policy.Reward(-1f, tick);
+            float peak = 0f;
+            for (int i = 0; i < 30; i++)
+            {
+                policy.Choose(x, tick); tick += 100;
+                peak = System.Math.Max(peak, policy.Epsilon);
+            }
+            Assert.True(peak < 0.1f, "one bad outcome pushed exploration to " + peak);
+        }
+
+        [Fact]
+        public void FilesWithoutSurpriseAveragesStillLoad()
+        {
+            var policy = new TacticPolicy(2, 6);
+            string text = policy.Serialize().Replace("|rs=0|bs=0", "");
+            Assert.DoesNotContain("rs=", text);
+            Assert.True(TacticPolicy.TryParse(text, 2, 6, out TacticPolicy back), text);
+            Assert.Equal(0f, back.BaselineSurprise);
+            // the first trained decision seeds both averages instead of leaving the baseline at zero
+            float[] x = { 0.5f, 0.5f };
+            back.Choose(x, 0);
+            back.Reward(1f, 10);
+            back.Flush();
+            Assert.True(back.BaselineSurprise > 0f);
+            Assert.Equal(back.RecentSurprise, back.BaselineSurprise);
         }
 
         [Fact]

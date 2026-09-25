@@ -57,7 +57,9 @@ namespace Hunted.Core
                     return FixedEpsilon.Value;
                 }
                 float scheduled = Math.Max(MinEpsilon, InitialEpsilon * (float)Math.Pow(0.5, (double)Decisions / EpsilonHalfLife));
-                float surprise = Math.Max(0f, (RecentSurprise - BaselineSurprise) / (BaselineSurprise + 0.1f));
+                // Dead zone: recent surprise must be more than double what is normal for this player
+                // before exploration reopens, so one unlucky hit does not, but a changed player does.
+                float surprise = Math.Max(0f, (RecentSurprise - BaselineSurprise) / (BaselineSurprise + 0.1f) - 1f);
                 float reopened = MinEpsilon + Math.Min(1f, surprise) * (InitialEpsilon - MinEpsilon);
                 return Math.Max(scheduled, reopened);
             }
@@ -200,6 +202,12 @@ namespace Hunted.Core
         private void Learn(Decision d)
         {
             float surprise = Math.Abs(d.Credit - d.Predicted);
+            if (BaselineSurprise == 0f)
+            {
+                // First trained decision (or a file saved before surprise was tracked): start both
+                // averages from real data so the fast one cannot outrun the slow one from zero.
+                RecentSurprise = BaselineSurprise = surprise;
+            }
             RecentSurprise += (surprise - RecentSurprise) * 0.1f;
             BaselineSurprise += (surprise - BaselineSurprise) * 0.01f;
             net.Train(d.Features, d.Tactic, d.Credit, LearningRate);

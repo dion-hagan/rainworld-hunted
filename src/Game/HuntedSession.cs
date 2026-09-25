@@ -49,6 +49,7 @@ namespace Hunted.Game
         private int cachedRoomsAway = -1;
         private int roomsAwayRefresh;
         private int virtualCycles;
+        private bool testKill;
         private readonly List<string> log = new List<string>();
 
         private HuntedSession(RainWorldGame game, SaveState saveState)
@@ -630,7 +631,10 @@ namespace Hunted.Game
             PursuerDiedThisCycle = true;
             lastKnownAlive = false;
             HuntedLog.Info("The Pursuer died in " + (creature.Room != null ? creature.Room.name : lastKnownRoom) + ".");
-            Learner.Reward(-3f, "died");
+            if (!testKill)
+            {
+                Learner.Reward(-3f, "died");
+            }
         }
 
         public void OnPlayerDied(Player player)
@@ -827,13 +831,21 @@ namespace Hunted.Game
                 return;
             }
             HuntedLog.Info("[test] Killing the Pursuer.");
-            if (Creature.realizedCreature != null)
+            testKill = true;   // a debug kill must not teach the policy anything
+            try
             {
-                Creature.realizedCreature.Die();
+                if (Creature.realizedCreature != null)
+                {
+                    Creature.realizedCreature.Die();
+                }
+                else
+                {
+                    Creature.Die();
+                }
             }
-            else
+            finally
             {
-                Creature.Die();
+                testKill = false;
             }
         }
 
