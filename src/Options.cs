@@ -21,6 +21,7 @@ namespace Hunted
         public readonly Configurable<int> GraceSeconds;
         public readonly Configurable<bool> OffscreenUpgrades;
         public readonly Configurable<bool> HardMode;
+        public readonly Configurable<bool> SlugcatBody;
 
         public readonly Configurable<bool> ShowOverlay;
         public readonly Configurable<bool> DebugHotkeys;
@@ -42,6 +43,7 @@ namespace Hunted
             GraceSeconds = config.Bind("graceSeconds", 20, new ConfigurableInfo("Seconds after a cycle starts before the Pursuer starts moving toward you.", new ConfigAcceptableRange<int>(0, 180)));
             OffscreenUpgrades = config.Bind("offscreenUpgrades", true, new ConfigurableInfo("Let the Pursuer find rocks, spears and bombs while it travels between regions offscreen."));
             HardMode = config.Bind("hardMode", false, new ConfigurableInfo("Hard mode: the Pursuer respawns with the gear it died with."));
+            SlugcatBody = config.Bind("slugcatBody", true, new ConfigurableInfo("Slugcat body (needs Downpour): the Pursuer is an AI-driven slugcat with Hunter's stats. Off: an elite scavenger."));
 
             ShowOverlay = config.Bind("showOverlay", true, new ConfigurableInfo("Show the Pursuer tracker line at the top of the screen."));
             DebugHotkeys = config.Bind("debugHotkeys", true, new ConfigurableInfo("Enable the testing hotkeys below."));
@@ -87,6 +89,7 @@ namespace Hunted
             AddNumber(gameplay, ref y, RetreatHops, "Retreat after your death (shelters)");
             AddNumber(gameplay, ref y, RespawnCycles, "Respawn delay (cycles)");
             AddNumber(gameplay, ref y, GraceSeconds, "Grace period at cycle start (seconds)");
+            AddToggle(gameplay, ref y, SlugcatBody, "Slugcat body (Stage 2, needs Downpour; off = elite scavenger)");
             AddToggle(gameplay, ref y, OffscreenUpgrades, "Offscreen gear upgrades");
             AddToggle(gameplay, ref y, HardMode, "Hard mode: keeps gear on respawn");
 

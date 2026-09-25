@@ -17,6 +17,19 @@ any story game. Watch the red tracker line at the top of the screen and
 
 The keys can be rebound in the same Remix tab.
 
+## Which body
+
+**Remix → Hunted → Slugcat body** picks Stage 2 (an AI-driven adult slugcat with
+Hunter's stats, default) or Stage 1 (the elite scavenger). The switch applies the
+next time the Pursuer is spawned, so F11 then F5 is the quickest way to compare
+them. Without Downpour the scavenger is always used.
+
+With the slugcat body the overlay shows the AI's mode: *Travel* (heading for
+your room), *Search* (going to where it last saw you), *Engage* (lined up to
+throw, or closing in), *Scavenge* (going for a better weapon), *Flee* (a
+predator has the upper hand) and *EscapeRain*. It holds one item; F8 cycles
+rock, spear, explosive spear and bomb.
+
 ## Reading the overlay
 
 ```

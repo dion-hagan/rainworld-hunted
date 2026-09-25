@@ -27,6 +27,15 @@
       <HintPath>$(RainWorldPath)\BepInEx\plugins\HOOKS-Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- MonoMod.RuntimeDetour for detouring property getters HookGen has no event for -->
+    <Reference Include="MonoMod.RuntimeDetour">
+      <HintPath>$(RainWorldBepInExCorePath)\MonoMod.RuntimeDetour.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.Utils">
+      <HintPath>$(RainWorldBepInExCorePath)\MonoMod.Utils.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Game + Unity assemblies, from RainWorld_Data/Managed -->
@@ -41,6 +50,11 @@
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(RainWorldManagedPath)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Some room/tile helpers expose Unity.Mathematics types -->
+    <Reference Include="Unity.Mathematics">
+      <HintPath>$(RainWorldManagedPath)\Unity.Mathematics.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <!-- UnityEngine.Input for the testing hotkeys -->

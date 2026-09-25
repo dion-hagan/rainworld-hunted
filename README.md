@@ -6,13 +6,21 @@ When it reaches your region it becomes a real creature that tracks you down room
 room and tries to kill you, scavenging gear as it goes. Kill it and it respawns far
 away a few cycles later; die and it backs off so it never camps your spawn.
 
-This is **Stage 1** of the [design](docs/design.md): the Pursuer is an elite
-scavenger driven by the game's own scavenger AI, with a permanent grudge and a target
-lock on you. It lives inside the ecosystem: lizards, vultures and other scavengers
-treat it like any scavenger, and other scavengers are hostile to it.
+Two bodies are implemented (see the [design](docs/design.md)):
 
-Targets Rain World 1.11.8 (Remix). Downpour / Watcher are optional: without them
-the Pursuer is a regular scavenger instead of an elite.
+- **Stage 2 (default, needs Downpour): a real slugcat.** The Pursuer is Downpour's NPC
+  slugcat body grown to an adult with Hunter's stats, driven by the mod's own AI: the
+  slugpup movement layer (poles, pipes, jumps, wall climbs) under a hunting decision
+  layer that closes in, takes a throwing position, throws when lined up, picks up
+  better weapons, flees predators it cannot fight and hides from the rain.
+- **Stage 1: an elite scavenger** driven by the game's own scavenger AI with a permanent
+  grudge and a target lock on you.
+
+Either way it lives inside the ecosystem: lizards, vultures and other scavengers treat
+it like the slugcat or scavenger it is, and scavengers are hostile to it.
+
+Targets Rain World 1.11.8 (Remix). Downpour / Watcher are optional: without them the
+Pursuer is a regular scavenger.
 
 ## Install
 
@@ -61,8 +69,8 @@ xunit tests; the `Game` half is the hooks and the session runtime.
 
 ## Status
 
-Milestones 1–3 of the design (graph and tracker, Stage 1 Pursuer, gear/death rules)
-are implemented. Not yet: RaidScav (hunting scavengers for their gear), map marker,
-sleep-screen countdown, proximity audio, Stage 2 slugcat body.
+Milestones 1–3 and 6 of the design (graph and tracker, both Pursuer bodies, gear and
+death rules, sleep-screen line) are implemented. Not yet: RaidScav (hunting scavengers
+for their gear), map marker, proximity audio.
 
 *AI-assisted code, reviewed by a human.*

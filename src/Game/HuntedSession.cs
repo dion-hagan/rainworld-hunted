@@ -40,6 +40,7 @@ namespace Hunted.Game
         private string lastKnownRoom;
         private List<string> lastKnownInventory;
         private bool lastKnownAlive = true;
+        private InWorldSnapshot frozenSnapshot;
         private int graceTicks;
         private int stuckTicks;
         private int retargetTicks;
@@ -96,7 +97,7 @@ namespace Hunted.Game
 
         public bool IsPursuer(AbstractCreature creature)
         {
-            return creature != null && Creature != null && ReferenceEquals(creature, Creature);
+            return creature != null && (PursuerMark.IsMarked(creature) || (Creature != null && ReferenceEquals(creature, Creature)));
         }
 
         public bool OwnsSaveData(DeathPersistentSaveData data)
@@ -213,22 +214,24 @@ namespace Hunted.Game
                 HuntedLog.Warn("No room found to spawn the Pursuer in " + WorldRooms.RegionName(world) + ".");
                 return;
             }
-            int nodeIdx = WorldRooms.PickNode(room, PursuerSpawner.Template());
+            int nodeIdx = WorldRooms.PickNode(room, PursuerSpawner.Template(PursuerBodies.Selected()));
             if (nodeIdx < 0)
             {
                 HuntedLog.Warn("Room " + room.name + " has no node the Pursuer can use.");
                 return;
             }
-            Creature = PursuerSpawner.Spawn(world, room, nodeIdx, State.Inventory);
+            PursuerBody body = PursuerBodies.Selected();
+            Creature = PursuerSpawner.Spawn(world, room, nodeIdx, State.Inventory, body);
             graceTicks = grace ? GraceSeconds * TicksPerSecond : 0;
             stuckTicks = 0;
             retargetTicks = 0;
             lastKnownRoom = room.name;
             lastKnownInventory = null;
             lastKnownAlive = true;
+            frozenSnapshot = null;
             PursuerDiedThisCycle = false;
             int away = playerRoom >= 0 ? WorldRooms.Distance(world, room.index, playerRoom) : -1;
-            HuntedLog.Info("The Pursuer is in " + room.name + " (" + away + " rooms from the player), holding " + GearTier.Describe(State.Inventory) + (grace ? ", grace " + GraceSeconds + "s." : "."));
+            HuntedLog.Info("The Pursuer (" + PursuerBodies.Name(body) + ") is in " + room.name + " (" + away + " rooms from the player), holding " + GearTier.Describe(PursuerSpawner.TrimToBody(State.Inventory, body)) + (grace ? ", grace " + GraceSeconds + "s." : "."));
         }
 
         public void Despawn()
@@ -267,8 +270,8 @@ namespace Hunted.Game
 
         // ------------------------------------------------------------------ abstract AI
 
-        /// <summary>Replaces ScavengerAbstractAI.AbstractBehavior for the Pursuer: always head for the player's room.</summary>
-        public void AbstractBehavior(ScavengerAbstractAI ai, int time)
+        /// <summary>Replaces the abstract behavior of either body for the Pursuer: always head for the player's room.</summary>
+        public void AbstractBehavior(AbstractCreatureAI ai, int time)
         {
             AbstractCreature parent = ai.parent;
             World world = ai.world;
@@ -290,7 +293,11 @@ namespace Hunted.Game
 
             if (parent.realizedCreature != null)
             {
-                // The real AI moves the body; we only keep its migration goal on the player.
+                if (!(ai is ScavengerAbstractAI))
+                {
+                    return; // the slugcat body's own AI travels between rooms by itself
+                }
+                // The scavenger's real AI moves the body; we only keep its migration goal on the player.
                 if (!rainSoon && parent.pos.room != target)
                 {
                     int node = WorldRooms.PickNodeToward(world.GetAbstractRoom(target), parent.pos.room, parent.creatureTemplate);
@@ -323,7 +330,10 @@ namespace Hunted.Game
             if (nodeIdx > -1)
             {
                 ai.SetDestination(new WorldCoordinate(target, -1, -1, nodeIdx));
-                ai.longTermMigration = ai.destination;
+                if (ai is ScavengerAbstractAI scav)
+                {
+                    scav.longTermMigration = ai.destination;
+                }
             }
             if (ai.path.Count > 0)
             {
@@ -337,6 +347,86 @@ namespace Hunted.Game
                 stuckTicks = 0;
                 Unstick(world, parent, targetRoom);
             }
+        }
+
+        /// <summary>
+        /// Where the slugcat body should walk to reach the player: the player's own
+        /// position, or the room outside the shelter or gate the player is hiding in.
+        /// Null when the player is not in this world.
+        /// </summary>
+        public WorldCoordinate? HuntTargetCoordinate(World world)
+        {
+            AbstractCreature player = TargetPlayer();
+            if (player == null || player.world != world)
+            {
+                return null;
+            }
+            AbstractRoom room = world.GetAbstractRoom(player.pos.room);
+            if (room == null || room.offScreenDen)
+            {
+                return null;
+            }
+            if (!room.shelter && !room.gate)
+            {
+                return player.pos;
+            }
+            int outside = TargetRoom(world, player);
+            AbstractRoom outsideRoom = outside >= 0 ? world.GetAbstractRoom(outside) : null;
+            if (outsideRoom == null)
+            {
+                return null;
+            }
+            int node = WorldRooms.PickNodeToward(outsideRoom, room.index, PursuerSpawner.Template(PursuerBodies.Selected()));
+            return node > -1 ? new WorldCoordinate(outsideRoom.index, -1, -1, node) : (WorldCoordinate?)null;
+        }
+
+        private WorldCoordinate? rainShelterCoord;
+        private int rainShelterRoom = -1;
+        private int rainShelterAge;
+
+        /// <summary>The nearest shelter to hide in from the rain that is not the one the player is using.</summary>
+        public WorldCoordinate? RainShelterCoordinate(World world, int fromRoom)
+        {
+            if (rainShelterCoord.HasValue && rainShelterRoom == fromRoom && ++rainShelterAge < 400)
+            {
+                return rainShelterCoord;
+            }
+            rainShelterRoom = fromRoom;
+            rainShelterAge = 0;
+            rainShelterCoord = null;
+            AbstractCreature player = TargetPlayer();
+            int playerRoom = player != null ? player.pos.room : -1;
+            Dictionary<int, int> dist = WorldRooms.Distances(world, fromRoom);
+            AbstractRoom best = null;
+            int bestD = int.MaxValue;
+            foreach (KeyValuePair<int, int> pair in dist)
+            {
+                AbstractRoom r = world.GetAbstractRoom(pair.Key);
+                if (r != null && r.shelter && r.index != playerRoom && pair.Value < bestD)
+                {
+                    best = r;
+                    bestD = pair.Value;
+                }
+            }
+            if (best != null)
+            {
+                int node = WorldRooms.PickNode(best, PursuerSpawner.Template(PursuerBodies.Selected()));
+                if (node > -1)
+                {
+                    rainShelterCoord = new WorldCoordinate(best.index, -1, -1, node);
+                }
+            }
+            return rainShelterCoord;
+        }
+
+        /// <summary>The cycle is over (sleep or death): remember the creature and take it out of the world before the game saves it.</summary>
+        public void OnSessionEnding()
+        {
+            if (frozenSnapshot == null)
+            {
+                frozenSnapshot = Snapshot();
+            }
+            Despawn();
         }
 
         private int TargetRoom(World world, AbstractCreature player)
@@ -464,6 +554,10 @@ namespace Hunted.Game
             if (State.Status != PursuerStatus.Arrived)
             {
                 return null;
+            }
+            if (frozenSnapshot != null)
+            {
+                return frozenSnapshot;
             }
             if (Creature != null)
             {
@@ -616,13 +710,15 @@ namespace Hunted.Game
             s.Inventory = inventory;
             State = s;
             Despawn();
-            int node = WorldRooms.PickNode(room, PursuerSpawner.Template());
+            PursuerBody body = PursuerBodies.Selected();
+            int node = WorldRooms.PickNode(room, PursuerSpawner.Template(body));
             if (node < 0)
             {
                 HuntedLog.Warn("[test] The player's room has no pipe the Pursuer can use.");
                 return;
             }
-            Creature = PursuerSpawner.Spawn(world, room, node, inventory);
+            Creature = PursuerSpawner.Spawn(world, room, node, inventory, body);
+            frozenSnapshot = null;
             graceTicks = 0;
             stuckTicks = 0;
             lastKnownRoom = room.name;
@@ -661,9 +757,10 @@ namespace Hunted.Game
             }
         }
 
-        /// <summary>F8: nothing, rock, spear, explosive spear, spear + bomb, nothing...</summary>
+        /// <summary>F8: nothing, rock, spear, explosive spear, bomb (plus a spear for the scavenger body), nothing...</summary>
         public void TestCycleGear()
         {
+            PursuerBody body = PursuerBodies.Selected();
             List<string> current = Creature != null ? PursuerSpawner.ReadInventory(Creature) : new List<string>(State.Inventory);
             List<string> next;
             if (current.Count == 0)
@@ -676,7 +773,7 @@ namespace Hunted.Game
             }
             else if (current.Contains(GearTier.ExplosiveSpear))
             {
-                next = new List<string> { GearTier.Spear, GearTier.ScavengerBomb };
+                next = body == PursuerBody.Slugcat ? new List<string> { GearTier.ScavengerBomb } : new List<string> { GearTier.Spear, GearTier.ScavengerBomb };
             }
             else if (current.Contains(GearTier.Spear))
             {
@@ -693,11 +790,12 @@ namespace Hunted.Game
             {
                 World world = Creature.world;
                 AbstractRoom room = Creature.Room;
-                int node = WorldRooms.PickNode(room, PursuerSpawner.Template());
+                int node = WorldRooms.PickNode(room, PursuerSpawner.Template(body));
                 Despawn();
                 if (room != null && node > -1)
                 {
-                    Creature = PursuerSpawner.Spawn(world, room, node, next);
+                    Creature = PursuerSpawner.Spawn(world, room, node, next, body);
+                    frozenSnapshot = null;
                     graceTicks = 0;
                 }
             }
@@ -778,6 +876,10 @@ namespace Hunted.Game
 
         private string BehaviorName()
         {
+            if (Creature.abstractAI != null && Creature.abstractAI.RealAI is PursuerAI pursuer)
+            {
+                return pursuer.DebugState;
+            }
             if (Creature.abstractAI != null && Creature.abstractAI.RealAI is ScavengerAI ai && ai.behavior != null)
             {
                 return "behavior: " + ai.behavior.value;

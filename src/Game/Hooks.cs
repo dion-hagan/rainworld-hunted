@@ -51,12 +51,34 @@ namespace Hunted.Game
             On.ScavengerGraphics.ctor += ScavengerGraphics_ctor;
             On.HUD.HUD.InitSinglePlayerHud += HUD_InitSinglePlayerHud;
             On.Menu.SleepAndDeathScreen.GetDataFromGame += SleepAndDeathScreen_GetDataFromGame;
+
+            // End of cycle: take the creature out of the world before the game inspects shelters
+            On.SaveState.SessionEnded += SaveState_SessionEnded;
+
+            // The slugcat body
+            Stage2Hooks.Apply();
         }
 
         private static bool IsPursuer(AbstractCreature creature)
         {
+            return PursuerMark.IsMarked(creature);
+        }
+
+        private static void SaveState_SessionEnded(On.SaveState.orig_SessionEnded orig, SaveState self, RainWorldGame game, bool survived, bool newMalnourished)
+        {
             HuntedSession s = HuntedSession.Current;
-            return s != null && s.IsPursuer(creature);
+            if (s != null && s.game == game)
+            {
+                try
+                {
+                    s.OnSessionEnding();
+                }
+                catch (Exception e)
+                {
+                    HuntedLog.Error("SessionEnded hook failed", e);
+                }
+            }
+            orig(self, game, survived, newMalnourished);
         }
 
         private static bool IsScavengerKind(CreatureTemplate template)
