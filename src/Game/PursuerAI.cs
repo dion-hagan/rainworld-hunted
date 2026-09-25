@@ -542,10 +542,36 @@ namespace Hunted.Game
                 {
                     throwAtTarget = (int)Mathf.Sign(victim.bodyChunks[chunk].pos.x - cat.firstChunk.pos.x);
                     HuntedSession.Current?.Learner.NoteThrow();
+                    HuntedLog.Info("[engage] lined up on the player, throwing " + (throwAtTarget > 0 ? "right" : "left") + " (" + tactic + ")");
                 }
+                else if (diagnosticCooldown <= 0)
+                {
+                    diagnosticCooldown = 80;
+                    HuntedLog.Info("[engage] holding fire: " + WhyNotAttackPos(victim.bodyChunks[chunk]) + " (" + tactic + ", " + cat.bodyMode + ")");
+                }
+            }
+            if (diagnosticCooldown > 0)
+            {
+                diagnosticCooldown--;
             }
             return coord;
         }
+
+        private int diagnosticCooldown;
+
+        /// <summary>The first failed condition of <see cref="GoodAttackPos"/>, for the log.</summary>
+        private string WhyNotAttackPos(BodyChunk chunk)
+        {
+            Vector2 dir = Custom.DirVec(cat.mainBodyChunk.pos, chunk.pos);
+            float distance = Vector2.Distance(cat.mainBodyChunk.pos, chunk.pos);
+            if (dir.y > 0.05f) return "player above (dir.y " + dir.y.ToString("0.00") + ")";
+            if (dir.y < -0.2f) return "player below (dir.y " + dir.y.ToString("0.00") + ")";
+            if (distance > ThrowRangePx) return "out of range (" + (int)distance + " px)";
+            if (HeldWeapon() is ScavengerBomb && distance < BombMinRangePx) return "too close for a bomb";
+            if (!VisualContact(chunk)) return "no line of sight at " + (int)distance + " px";
+            return "no reason";
+        }
+
 
         /// <summary>
         /// Every TacticHoldTicks, asks the learner which tactic fits the situation. With
@@ -581,7 +607,12 @@ namespace Hunted.Game
             situation[i++] = threatTracker.Utility();
             situation[i++] = GoodAttackPos(victim.mainBodyChunk) ? 1f : 0f;
             situation[i++] = HeldWeapon() is ScavengerBomb ? 1f : 0f;
+            Tactic previous = tactic;
             tactic = learner.Choose(situation);
+            if (tactic != previous)
+            {
+                HuntedLog.Info("[engage] tactic " + previous + " -> " + tactic + " at " + (int)offset.magnitude + " px, dy " + (int)offset.y + ", los " + (target.VisualContact ? "yes" : "no"));
+            }
             if (tactic == Tactic.Reposition)
             {
                 // Give up the current spot: FindAttackPosition keeps attackPos for up to 300 ticks
@@ -931,6 +962,7 @@ namespace Hunted.Game
                     input.thrw = true;
                     turnDelay = 5;
                     throwAtTarget = 0;
+                    HuntedLog.Info("[engage] throw input sent, holding " + (HeldWeapon() != null ? HeldWeapon().GetType().Name : "nothing"));
                 }
                 else
                 {
