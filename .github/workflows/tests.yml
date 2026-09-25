@@ -1,0 +1,18 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core-tests:
+    # The Core half of the mod has no game dependency, so its tests run anywhere.
+    # (Tests that need an installed copy of Rain World skip themselves.)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet test tests/Hunted.Tests/Hunted.Tests.csproj --configuration Release
