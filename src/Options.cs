@@ -22,6 +22,8 @@ namespace Hunted
         public readonly Configurable<bool> OffscreenUpgrades;
         public readonly Configurable<bool> HardMode;
         public readonly Configurable<bool> SlugcatBody;
+        public readonly Configurable<bool> AdaptiveTactics;
+        public readonly Configurable<KeyCode> KeyForget;
 
         public readonly Configurable<bool> ShowOverlay;
         public readonly Configurable<bool> DebugHotkeys;
@@ -44,6 +46,8 @@ namespace Hunted
             OffscreenUpgrades = config.Bind("offscreenUpgrades", true, new ConfigurableInfo("Let the Pursuer find rocks, spears and bombs while it travels between regions offscreen."));
             HardMode = config.Bind("hardMode", false, new ConfigurableInfo("Hard mode: the Pursuer respawns with the gear it died with."));
             SlugcatBody = config.Bind("slugcatBody", true, new ConfigurableInfo("Slugcat body (needs Downpour): the Pursuer is an AI-driven slugcat with Hunter's stats. Off: an elite scavenger."));
+            AdaptiveTactics = config.Bind("adaptiveTactics", true, new ConfigurableInfo("Adaptive tactics (slugcat body): the Pursuer learns which fighting tactic works against you and remembers it between cycles."));
+            KeyForget = config.Bind("keyForget", KeyCode.F12, new ConfigurableInfo("Forget: throw away everything the Pursuer has learned about you in this campaign."));
 
             ShowOverlay = config.Bind("showOverlay", true, new ConfigurableInfo("Show the Pursuer tracker line at the top of the screen."));
             DebugHotkeys = config.Bind("debugHotkeys", true, new ConfigurableInfo("Enable the testing hotkeys below."));
@@ -92,6 +96,7 @@ namespace Hunted
             AddToggle(gameplay, ref y, SlugcatBody, "Slugcat body (Stage 2, needs Downpour; off = elite scavenger)");
             AddToggle(gameplay, ref y, OffscreenUpgrades, "Offscreen gear upgrades");
             AddToggle(gameplay, ref y, HardMode, "Hard mode: keeps gear on respawn");
+            AddToggle(gameplay, ref y, AdaptiveTactics, "Adaptive tactics: learns what works against you");
 
             y = 560f;
             testing.AddItems(new OpLabel(new Vector2(20f, y), new Vector2(560f, 30f), "Testing", FLabelAlignment.Left, true));
@@ -107,6 +112,7 @@ namespace Hunted
             AddKey(testing, ref y, KeyKill, "Kill it");
             AddKey(testing, ref y, KeyOverlay, "Toggle overlay");
             AddKey(testing, ref y, KeyReset, "Reset it far away");
+            AddKey(testing, ref y, KeyForget, "Forget learned tactics");
         }
 
         private static void AddNumber(OpTab tab, ref float y, Configurable<int> cfg, string label)
