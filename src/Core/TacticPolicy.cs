@@ -72,6 +72,8 @@ namespace Hunted.Core
 
         public int Features { get; }
         public int Decisions { get; private set; }
+        /// <summary>Called with (features, tactic, credit) each time a decision is trained; the arena uses it to log a dataset.</summary>
+        public Action<float[], int, float> OnTrained;
         public int Rewards { get; private set; }
         public float TotalReward { get; private set; }
 
@@ -132,7 +134,10 @@ namespace Hunted.Core
                 }
             }
             pending.Add(new Decision { Features = (float[])features.Clone(), Tactic = choice, Tick = tick, Predicted = scores[choice] });
-            Decisions++;
+            if (Decisions < int.MaxValue)
+            {
+                Decisions++; // saturates: a headless run can make billions of decisions
+            }
             Expire(tick);
             return (Tactic)choice;
         }
@@ -153,7 +158,10 @@ namespace Hunted.Core
         /// </summary>
         public void Reward(float value, int tick, bool throwOutcome = false)
         {
-            Rewards++;
+            if (Rewards < int.MaxValue)
+            {
+                Rewards++;
+            }
             TotalReward += value;
             if (throwOutcome)
             {
@@ -211,6 +219,7 @@ namespace Hunted.Core
             RecentSurprise += (surprise - RecentSurprise) * 0.1f;
             BaselineSurprise += (surprise - BaselineSurprise) * 0.01f;
             net.Train(d.Features, d.Tactic, d.Credit, LearningRate);
+            OnTrained?.Invoke(d.Features, d.Tactic, d.Credit);
             if (ReferenceEquals(d, lastThrow))
             {
                 lastThrow = null;

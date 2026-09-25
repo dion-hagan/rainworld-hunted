@@ -14,8 +14,7 @@ namespace Hunted.Game
     /// </summary>
     public sealed class PursuerLearner
     {
-        public const int FeatureCount = 12;
-        private const string FilePrefix = "dion_hunted_tactics_";
+        public const int FeatureCount = TacticFeatures.Count;
 
         public TacticPolicy Policy { get; private set; }
         public int Tick { get; private set; }
@@ -24,6 +23,7 @@ namespace Hunted.Game
         public bool Enabled => (Options.Instance == null || Options.Instance.AdaptiveTactics.Value) && PursuerBodies.Selected() == PursuerBody.Slugcat;
 
         private readonly string path;
+        private readonly string baselinePath;
         private readonly int seed;
         private bool dirty;
 
@@ -32,7 +32,8 @@ namespace Hunted.Game
             seed = saveState.seed;
             string slot = game.rainWorld.options.saveSlot.ToString();
             string slugcat = saveState.saveStateNumber != null ? saveState.saveStateNumber.value : "unknown";
-            path = Path.Combine(Folder(), FilePrefix + slot + "_" + slugcat + ".txt");
+            path = Path.Combine(Folder(), TacticsFiles.PerSlot(slot, slugcat));
+            baselinePath = Path.Combine(Folder(), TacticsFiles.Baseline);
             Load();
         }
 
@@ -54,9 +55,31 @@ namespace Hunted.Game
             }
             catch (Exception e)
             {
-                HuntedLog.Error("Could not read learned tactics; starting fresh", e);
+                HuntedLog.Error("Could not read learned tactics; starting from the baseline or fresh", e);
             }
-            Policy = new TacticPolicy(FeatureCount, seed);
+            Policy = LoadBaseline() ?? new TacticPolicy(FeatureCount, seed);
+        }
+
+        /// <summary>
+        /// The policy the arena trained against the Stage 2 rules, if one is installed: a
+        /// slot with nothing learned yet starts from it instead of from random weights, and
+        /// keeps learning about the player from there.
+        /// </summary>
+        private TacticPolicy LoadBaseline()
+        {
+            try
+            {
+                if (File.Exists(baselinePath) && TacticPolicy.TryParse(File.ReadAllText(baselinePath), FeatureCount, seed, out TacticPolicy baseline))
+                {
+                    HuntedLog.Info("Starting from the arena baseline tactics: " + baseline.Decisions + " decisions, total reward " + baseline.TotalReward.ToString("0.0") + ".");
+                    return baseline;
+                }
+            }
+            catch (Exception e)
+            {
+                HuntedLog.Error("Could not read the baseline tactics; starting fresh", e);
+            }
+            return null;
         }
 
         public void Save()
@@ -78,16 +101,16 @@ namespace Hunted.Game
             }
         }
 
-        /// <summary>Throws away everything learned for this save slot and slugcat.</summary>
+        /// <summary>Throws away everything learned for this save slot and slugcat, back to the arena baseline if one is installed.</summary>
         public void Forget()
         {
-            Policy = new TacticPolicy(FeatureCount, seed);
+            Policy = LoadBaseline() ?? new TacticPolicy(FeatureCount, seed);
             dirty = true;
             Save();
             HuntedLog.Info("[test] Learned tactics reset.");
         }
 
-        /// <summary>Deletes every learned-tactics file, for the Remix button (usable from the main menu).</summary>
+        /// <summary>Deletes every per-slot learned-tactics file, for the Remix button (usable from the main menu). The arena baseline stays.</summary>
         public static int ForgetAll()
         {
             int deleted = 0;
@@ -95,7 +118,7 @@ namespace Hunted.Game
             {
                 if (Directory.Exists(Folder()))
                 {
-                    foreach (string file in Directory.GetFiles(Folder(), FilePrefix + "*.txt"))
+                    foreach (string file in Directory.GetFiles(Folder(), TacticsFiles.PerSlotPattern))
                     {
                         File.Delete(file);
                         deleted++;

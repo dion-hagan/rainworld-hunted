@@ -50,6 +50,11 @@ tactics** deletes every slot. With testing hotkeys on, the overlay also shows th
 four estimated rewards behind the choice, so you can watch them move. With the option
 off it always throws, which is the old behaviour.
 
+A slot with nothing learned yet starts from `dion_hunted_baseline_tactics.txt` in the
+same folder if that file exists: a policy trained headless against the Stage 2 rules by
+the [arena](arena.md). F12 and the Remix button go back to it rather than to random
+weights; delete the file to start truly fresh. The log says which it loaded.
+
 ## Reading the overlay
 
 ```

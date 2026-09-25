@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Headless arena: trains the Stage 3 Pursuer's tactic policy against the Stage 2
+       rules, many instances at once, and writes a baseline tactics file the mod loads.
+       The game-independent core is compiled straight in, like the tests do, so this
+       needs neither Rain World nor the mod DLL. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Hunted.Arena</RootNamespace>
+    <AssemblyName>Hunted.Arena</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Core\**\*.cs" Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

@@ -97,7 +97,7 @@ namespace Hunted
             AddToggle(gameplay, ref y, OffscreenUpgrades, "Offscreen gear upgrades");
             AddToggle(gameplay, ref y, HardMode, "Hard mode: keeps gear on respawn");
             AddToggle(gameplay, ref y, AdaptiveTactics, "Adaptive tactics: learns what works against you");
-            var forget = new OpSimpleButton(new Vector2(20f, y), new Vector2(200f, 28f), "Forget learned tactics") { description = "Deletes what the Pursuer has learned about you, for every save slot and slugcat." };
+            var forget = new OpSimpleButton(new Vector2(20f, y), new Vector2(200f, 28f), "Forget learned tactics") { description = "Deletes what the Pursuer has learned about you, for every save slot and slugcat. An installed arena baseline stays." };
             var forgetLabel = new OpLabel(new Vector2(235f, y + 4f), new Vector2(320f, 24f), "", FLabelAlignment.Left);
             forget.OnClick += _ => forgetLabel.text = "Deleted " + Game.PursuerLearner.ForgetAll() + " file(s).";
             gameplay.AddItems(forget, forgetLabel);
