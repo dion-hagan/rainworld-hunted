@@ -34,8 +34,23 @@ namespace Hunted.Core.Arena
         /// like a person.
         /// </summary>
         public float OpponentDodgeChance = 0f;
-        /// <summary>Generate a fresh room layout for every encounter instead of the fixed default room.</summary>
+        /// <summary>Generate a fresh room layout for every encounter instead of the fixed room.</summary>
         public bool RandomRooms = true;
+        /// <summary>The room used when <see cref="RandomRooms"/> is off; null means <see cref="ArenaRoom.Default"/>.</summary>
+        public ArenaRoom FixedRoom;
+        /// <summary>
+        /// A person does not climb a pole or jump a crate up toward an armed Pursuer standing
+        /// above them within throwing distance: with this on, the opponent holds at the foot of
+        /// the climb until that changes. The pure Stage 2 rules (off) climb anyway, which hands a
+        /// waiting learner free throws on the way up and teaches it to camp.
+        /// </summary>
+        public bool OpponentAvoidsExposure = true;
+        /// <summary>
+        /// A person who is not being fought leaves: the encounter ends as a draw after this many
+        /// ticks without a throw from either side. Zero means never. This is what makes waiting
+        /// cost something, as it does in the game.
+        /// </summary>
+        public int OpponentPatienceTicks = 600;
 
         public ArenaConfig Clone()
         {

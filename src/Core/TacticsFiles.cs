@@ -17,5 +17,30 @@ namespace Hunted.Core
         {
             return PerSlotPrefix + slot + "_" + slugcat + ".txt";
         }
+
+        /// <summary>
+        /// A baseline carries only the network into the game: its decision and reward counters
+        /// and surprise averages describe the arena, not this player. Stripping them starts the
+        /// exploration schedule at 30% and lets the surprise averages seed from real play.
+        /// </summary>
+        public static string ForBaselineLoad(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+            var kept = new System.Collections.Generic.List<string>();
+            foreach (string part in text.Trim().Split('|'))
+            {
+                int eq = part.IndexOf('=');
+                string key = eq < 0 ? part : part.Substring(0, eq);
+                if (key == "d" || key == "r" || key == "t" || key == "rs" || key == "bs")
+                {
+                    continue;
+                }
+                kept.Add(part);
+            }
+            return string.Join("|", kept);
+        }
     }
 }

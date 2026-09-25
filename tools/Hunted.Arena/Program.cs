@@ -21,7 +21,7 @@ usage: dotnet run --project tools/Hunted.Arena -c Release -- [options]
 
   --instances N     arenas (and policies) trained at the same time      [4]
   --episodes N      encounters per instance per round                   [300]
-  --eval N          encounters per policy per evaluation                [100]
+  --eval N          encounters per policy per evaluation                [4000]
   --rounds N        rounds to run; 0 = until --hours or a STOP file     [1]
   --hours H         stop after the round that passes this many hours    [0 = no limit]
   --seed N          base seed; instance i uses seed*1000+i              [1]
@@ -35,14 +35,14 @@ usage: dotnet run --project tools/Hunted.Arena -c Release -- [options]
   --dodge P         opponent chance per tick to jump a thrown weapon    [0]
   --max-ticks N     ticks per encounter before a draw                   [2400]
   --fixed-room      use the fixed test room instead of random layouts
-  --curriculum      rotate gear and a dodging opponent from round to round
-                    (evaluation stays on the setup above)
+  --curriculum      mix other gear, a dodging and an unarmed opponent into the
+                    encounters (evaluation stays on the setup above)
   --block N         encounters per row of report.csv                    [500]
   --log-decisions   also write decisions.csv (features, tactic, credit)
   --install [DIR]   copy the baseline into the game's ModConfigs folder
   --quiet           no progress lines during a round
 
-Writes DIR/dion_hunted_baseline_tactics.txt (best policy), DIR/instances/instance_N.txt,
+Writes DIR/dion_hunted_baseline_tactics.txt (best policy over all rounds), DIR/instances/instance_N.txt,
 DIR/report.csv (one row per instance per block, appended every round) and
 DIR/summary.txt (per round). Create DIR/STOP to end a long run after the current round.";
 
@@ -133,7 +133,7 @@ DIR/summary.txt (per round). Create DIR/STOP to end a long run after the current
             }
 
             Log("Arena: " + options.Instances + " instances x " + options.Episodes + " encounters per round, eval " + options.EvalEpisodes + ", seed " + options.Seed + ", threads " + options.Threads
-                + ", judged on " + ArenaTrainer.Describe(options.Config) + (curriculum ? ", trained on a rotating curriculum" : "") + ", output " + Path.GetFullPath(outDir));
+                + ", judged on " + ArenaTrainer.Describe(options.Config) + (curriculum ? ", trained on a mix of lessons" : "") + ", output " + Path.GetFullPath(outDir));
             Log(rounds > 0 ? "Rounds: " + rounds : "Rounds: until " + (hours > 0 ? hours.ToString(CultureInfo.InvariantCulture) + " h or " : "") + "a STOP file appears");
 
             var trainer = new ArenaTrainer(options);
@@ -175,12 +175,11 @@ DIR/summary.txt (per round). Create DIR/STOP to end a long run after the current
                 while (true)
                 {
                     round++;
-                    ArenaConfig lesson = lessons != null ? lessons[(round - 1) % lessons.Count] : null;
-                    Log("Round " + round + " starting" + (lesson != null ? " on " + ArenaTrainer.Describe(lesson) : "") + ".");
+                    Log("Round " + round + " starting" + (lessons != null ? " on a mix of " + lessons.Count + " setups" : "") + ".");
                     ArenaReport report;
                     try
                     {
-                        report = trainer.RunRound(options.Episodes, lesson, (inst, result) =>
+                        report = trainer.RunRound(options.Episodes, lessons, (inst, result) =>
                         {
                             if (!quiet && inst.Episodes.Count % progressEvery == 0)
                             {
@@ -200,7 +199,17 @@ DIR/summary.txt (per round). Create DIR/STOP to end a long run after the current
                     {
                         File.WriteAllText(Path.Combine(outDir, "instances", "instance_" + inst.Index + ".txt"), inst.Policy.Serialize());
                     }
-                    File.WriteAllText(baselinePath, report.Best.Policy.Serialize());
+                    bool written = false;
+                    if (report.ClearsBar && (report.Improved || !File.Exists(baselinePath)))
+                    {
+                        // The baseline is the best policy over every round so far, and only one that
+                        // beats every fixed tactic is worth shipping as a prior. Written whole so a
+                        // reader (the game, --install) never sees a half-written file.
+                        string tmp = baselinePath + ".tmp";
+                        File.WriteAllText(tmp, report.BestSoFarPolicy);
+                        File.Move(tmp, baselinePath, true);
+                        written = true;
+                    }
                     File.AppendAllText(reportPath, report.ToCsv(block));
                     var summary = new StringBuilder();
                     summary.AppendLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "  " + report.Summary().TrimEnd());
@@ -216,10 +225,12 @@ DIR/summary.txt (per round). Create DIR/STOP to end a long run after the current
                     summary.AppendLine();
                     File.AppendAllText(Path.Combine(outDir, "summary.txt"), summary.ToString());
                     Console.WriteLine(summary.ToString());
-                    Log("Best policy (instance " + report.Best.Index + ") written to " + baselinePath);
+                    Log(written ? "New best (instance " + report.Best.Index + ", " + report.Best.Eval + ") written to " + baselinePath
+                        : !report.ClearsBar ? "No baseline written: the best so far does not beat always-" + report.BestYardstick + " by more than the noise floor."
+                        : "Baseline kept from round " + report.BestSoFarRound + " (" + report.BestSoFar + ").");
                     decisions?.Flush();
 
-                    if (install)
+                    if (install && written)
                     {
                         Install(baselinePath, installDir);
                     }
@@ -250,10 +261,11 @@ DIR/summary.txt (per round). Create DIR/STOP to end a long run after the current
         }
 
         /// <summary>
-        /// The rotation a long run trains on: the judged setup first, then the same with an
-        /// opponent that sometimes jumps a throw, then rocks on either side, an explosive
-        /// spear, and an unarmed opponent that has to scavenge. The learner keeps its policy
-        /// across rounds, so it meets every situation the game's features can describe.
+        /// The lessons a round mixes, encounter by encounter: the judged setup, the same with an
+        /// opponent that sometimes jumps a throw, rocks on either side, an explosive spear, and
+        /// an unarmed opponent that has to scavenge. Mixed rather than rotated per round so the
+        /// policy never chases the last lesson it saw, and meets every situation the game's
+        /// features can describe.
         /// </summary>
         private static List<ArenaConfig> Curriculum(ArenaConfig judged)
         {

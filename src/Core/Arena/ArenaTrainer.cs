@@ -13,13 +13,13 @@ namespace Hunted.Core.Arena
         public int Instances = 4;
         /// <summary>Encounters per instance per round.</summary>
         public int Episodes = 300;
-        /// <summary>Encounters each policy plays with exploration off to measure it after a round.</summary>
-        public int EvalEpisodes = 100;
+        /// <summary>Encounters each policy plays with exploration off to measure it after a round (reward per encounter has a standard error of about 0.06 at 4000).</summary>
+        public int EvalEpisodes = 4000;
         public int Seed = 1;
         public int Threads = Environment.ProcessorCount;
         /// <summary>A serialized policy to continue training from (every instance starts from a copy), or null for fresh policies.</summary>
         public string StartFrom;
-        /// <summary>The setup every policy is evaluated on, and trained on unless a round says otherwise.</summary>
+        /// <summary>The setup every policy is judged on, and trained on unless a round mixes in lessons.</summary>
         public ArenaConfig Config = new ArenaConfig();
     }
 
@@ -45,7 +45,8 @@ namespace Hunted.Core.Arena
         public int Deaths;
         /// <summary>Encounters where both died in the same tick.</summary>
         public int Trades;
-        public int Timeouts;
+        /// <summary>Encounters nobody won: time ran out or the opponent lost patience.</summary>
+        public int Draws;
         public float MeanReward;
         public float MeanTicks;
 
@@ -54,13 +55,19 @@ namespace Hunted.Core.Arena
 
         public override string ToString()
         {
-            return "wins " + Percent(Wins) + "  deaths " + Percent(Deaths) + "  trades " + Percent(Trades) + "  draws " + Percent(Timeouts)
+            return "wins " + Percent(Wins) + "  deaths " + Percent(Deaths) + "  trades " + Percent(Trades) + "  draws " + Percent(Draws)
                 + "  reward/encounter " + MeanReward.ToString("+0.00;-0.00", CultureInfo.InvariantCulture);
         }
 
         private string Percent(int n)
         {
             return (Episodes > 0 ? 100f * n / Episodes : 0f).ToString("0", CultureInfo.InvariantCulture) + "%";
+        }
+
+        public bool SameOutcomesAs(EvalResult other)
+        {
+            return other != null && Episodes == other.Episodes && Wins == other.Wins && Deaths == other.Deaths && Trades == other.Trades && Draws == other.Draws
+                && Math.Abs(MeanReward - other.MeanReward) < 0.0001f && Math.Abs(MeanTicks - other.MeanTicks) < 0.01f;
         }
     }
 
@@ -71,10 +78,47 @@ namespace Hunted.Core.Arena
         /// <summary>What the round was trained on, for the summary.</summary>
         public string TrainingSetup;
         public IReadOnlyList<ArenaInstance> Instances;
-        /// <summary>The Stage 2 rules playing the learner's seat: what "no learning" scores against the same opponent.</summary>
+        /// <summary>The Stage 2 rules playing the learner's seat: what "no learning" scores against the same opponent, on the same encounters.</summary>
         public EvalResult Control;
+        /// <summary>The Stage 2 rules against the pure Stage 2 rules (no player-like behaviour on either side): the arena's fairness check, which should come out even.</summary>
+        public EvalResult PureDuel;
+        /// <summary>This round's best instance by reward per encounter.</summary>
         public ArenaInstance Best;
+        /// <summary>True when this round's best beat every earlier round's best on the judged encounters, so the baseline should be replaced.</summary>
+        public bool Improved;
+        /// <summary>The best policy over every round so far, and how it scored.</summary>
+        public string BestSoFarPolicy;
+        public EvalResult BestSoFar;
+        public int BestSoFarRound;
+        /// <summary>The four fixed-tactic policies on the judged encounters: what a policy that never looks at the situation scores.</summary>
+        public EvalResult[] Yardsticks;
+        /// <summary>The best-so-far reward minus the best yardstick's.</summary>
+        public float MarginOverYardsticks;
+        /// <summary>
+        /// Two standard errors of a reward-per-encounter mean at the judged size (the per-encounter
+        /// spread is about 4.1): a margin below this is noise.
+        /// </summary>
+        public float NoiseFloor;
+        /// <summary>True when the best-so-far beats every fixed tactic by more than the noise floor: only then is it worth shipping as a prior.</summary>
+        public bool ClearsBar => MarginOverYardsticks > NoiseFloor;
         public double Seconds;
+
+        /// <summary>The fixed tactic that scores highest on the judged encounters.</summary>
+        public Tactic BestYardstick
+        {
+            get
+            {
+                int best = 0;
+                for (int t = 1; t < Yardsticks.Length; t++)
+                {
+                    if (Yardsticks[t].MeanReward > Yardsticks[best].MeanReward)
+                    {
+                        best = t;
+                    }
+                }
+                return (Tactic)best;
+            }
+        }
 
         /// <summary>
         /// The round's encounters aggregated per instance in blocks of <paramref name="blockSize"/>
@@ -170,10 +214,27 @@ namespace Hunted.Core.Arena
         {
             var sb = new StringBuilder();
             sb.AppendLine("Round " + Round + " (" + Seconds.ToString("0", CultureInfo.InvariantCulture) + " s)" + (TrainingSetup != null ? ", trained on " + TrainingSetup : ""));
-            sb.AppendLine("Control (Stage 2 rules in the learner's seat): " + Control);
+            sb.AppendLine("Control (Stage 2 rules in the learner's seat, same encounters): " + Control);
+            if (PureDuel != null)
+            {
+                sb.AppendLine("Fairness check (Stage 2 rules on both sides, no player-like rules): " + PureDuel);
+            }
+            if (Yardsticks != null)
+            {
+                for (int t = 0; t < Yardsticks.Length; t++)
+                {
+                    sb.AppendLine("Always " + ((Tactic)t).ToString().PadRight(10) + ": " + Yardsticks[t]);
+                }
+            }
             foreach (ArenaInstance inst in Instances)
             {
-                sb.AppendLine("Instance " + inst.Index + " (seed " + inst.Seed + ", " + inst.TotalEpisodes.ToString(CultureInfo.InvariantCulture) + " encounters, " + inst.Policy.Decisions.ToString(CultureInfo.InvariantCulture) + " decisions): " + inst.Eval + (ReferenceEquals(inst, Best) ? "   <- best" : ""));
+                sb.AppendLine("Instance " + inst.Index + " (seed " + inst.Seed + ", " + inst.TotalEpisodes.ToString(CultureInfo.InvariantCulture) + " encounters, " + inst.Policy.Decisions.ToString(CultureInfo.InvariantCulture) + " decisions): " + inst.Eval + (ReferenceEquals(inst, Best) ? "   <- best this round" : ""));
+            }
+            sb.AppendLine("Best so far: round " + BestSoFarRound + ", " + BestSoFar + (Improved ? "   (improved this round)" : "   (kept)"));
+            if (Yardsticks != null)
+            {
+                sb.AppendLine("Margin over the best fixed tactic (always " + BestYardstick + "): " + MarginOverYardsticks.ToString("+0.00;-0.00", CultureInfo.InvariantCulture)
+                    + " (noise floor " + NoiseFloor.ToString("0.00", CultureInfo.InvariantCulture) + "): " + (ClearsBar ? "clears the bar, worth shipping" : "does not clear the bar yet, not written as the baseline"));
             }
             return sb.ToString();
         }
@@ -181,23 +242,30 @@ namespace Hunted.Core.Arena
 
     /// <summary>
     /// Trains several Stage 3 policies at once, each in its own arena against the Stage 2
-    /// rules, and after every round measures each one with exploration off and keeps the
-    /// best. Instances are independent: they never share a policy, so a round is
-    /// reproducible from the seed no matter how the threads are scheduled. A round can be
-    /// trained on a different setup than the one policies are judged on, so a long run can
-    /// rotate through gear and opponents (a curriculum) while the judge stays fixed.
+    /// rules, and after every round measures each one with exploration off on the same
+    /// judged encounters (fixed seed) and keeps the best over all rounds. Instances are
+    /// independent: they never share a policy, so a round is reproducible from the seed no
+    /// matter how the threads are scheduled. A round can mix lessons (other gear, a dodging
+    /// or unarmed opponent) into what it trains on, encounter by encounter, while the judge
+    /// stays fixed.
     /// </summary>
     public sealed class ArenaTrainer
     {
         public readonly ArenaRunOptions Options;
         private readonly List<ArenaInstance> instances = new List<ArenaInstance>();
+        private readonly int judgeSeed;
         private int round;
+        private string bestSoFarPolicy;
+        private EvalResult bestSoFar;
+        private int bestSoFarRound;
+        private EvalResult[] yardsticks;
 
         public IReadOnlyList<ArenaInstance> Instances => instances;
 
         public ArenaTrainer(ArenaRunOptions options)
         {
             Options = options ?? new ArenaRunOptions();
+            judgeSeed = unchecked(Options.Seed * 7919 + 1);
             for (int i = 0; i < Options.Instances; i++)
             {
                 int seed = Options.Seed * 1000 + i;
@@ -218,22 +286,26 @@ namespace Hunted.Core.Arena
         }
 
         /// <summary>
-        /// Plays <paramref name="episodes"/> encounters in every instance on <paramref name="trainingConfig"/>
-        /// (the options' config when null), then evaluates them all on the options' config.
+        /// Plays <paramref name="episodes"/> encounters in every instance, cycling through
+        /// <paramref name="lessons"/> encounter by encounter (the options' config when null),
+        /// then judges every policy on the options' config over the same encounters.
         /// </summary>
-        public ArenaReport RunRound(int episodes, ArenaConfig trainingConfig = null, Action<ArenaInstance, EpisodeResult> progress = null)
+        public ArenaReport RunRound(int episodes, IList<ArenaConfig> lessons = null, Action<ArenaInstance, EpisodeResult> progress = null)
         {
             DateTime started = DateTime.UtcNow;
             round++;
-            ArenaConfig training = trainingConfig ?? Options.Config;
+            if (lessons == null || lessons.Count == 0)
+            {
+                lessons = new[] { Options.Config };
+            }
             var parallel = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Options.Threads) };
             Parallel.For(0, instances.Count, parallel, i =>
             {
                 ArenaInstance inst = instances[i];
                 inst.Episodes.Clear();
-                inst.Match.Config = training;
                 for (int e = 0; e < episodes; e++)
                 {
+                    inst.Match.Config = lessons[e % lessons.Count];
                     EpisodeResult result = inst.Match.RunEpisode();
                     result.Instance = inst.Index;
                     inst.Episodes.Add(result);
@@ -243,15 +315,37 @@ namespace Hunted.Core.Arena
                 inst.Match.Config = Options.Config;
             });
             EvalResult control = null;
-            Parallel.For(-1, instances.Count, parallel, i =>
+            EvalResult pureDuel = null;
+            bool needYardsticks = yardsticks == null;
+            if (needYardsticks)
             {
-                if (i < 0)
+                yardsticks = new EvalResult[TacticPolicy.TacticCount];
+            }
+            // The judged encounters never change, so the yardsticks are computed once per run.
+            int extra = 2 + (needYardsticks ? TacticPolicy.TacticCount : 0);
+            Parallel.For(-extra, instances.Count, parallel, i =>
+            {
+                if (i == -1)
                 {
-                    control = Evaluate(Options.Config, null, Options.EvalEpisodes, Options.Seed * 7919 + round);
+                    control = Evaluate(Options.Config, null, Options.EvalEpisodes, judgeSeed);
+                    return;
+                }
+                if (i == -2)
+                {
+                    ArenaConfig pure = Options.Config.Clone();
+                    pure.OpponentAvoidsExposure = false;
+                    pure.OpponentPatienceTicks = 0;
+                    pureDuel = Evaluate(pure, null, Options.EvalEpisodes, judgeSeed);
+                    return;
+                }
+                if (i < -2)
+                {
+                    int t = -i - 3;
+                    yardsticks[t] = Evaluate(Options.Config, ConstantPolicy((Tactic)t), Options.EvalEpisodes, judgeSeed);
                     return;
                 }
                 ArenaInstance inst = instances[i];
-                inst.Eval = Evaluate(Options.Config, inst.Policy.Serialize(), Options.EvalEpisodes, Options.Seed * 7919 + round);
+                inst.Eval = Evaluate(Options.Config, inst.Policy.Serialize(), Options.EvalEpisodes, judgeSeed);
             });
             // Best by reward per encounter, which is what the policy is trained on and which
             // counts kills, deaths, hits and misses together; win rate breaks ties.
@@ -263,16 +357,44 @@ namespace Hunted.Core.Arena
                     best = inst;
                 }
             }
+            bool improved = bestSoFar == null || best.Eval.MeanReward > bestSoFar.MeanReward;
+            if (improved)
+            {
+                bestSoFarPolicy = best.Policy.Serialize();
+                bestSoFar = best.Eval;
+                bestSoFarRound = round;
+            }
+            var setup = new StringBuilder();
+            for (int i = 0; i < lessons.Count; i++)
+            {
+                setup.Append(i > 0 ? " / " : "").Append(Describe(lessons[i]));
+            }
+            float bestYardstick = float.MinValue;
+            foreach (EvalResult y in yardsticks)
+            {
+                bestYardstick = Math.Max(bestYardstick, y.MeanReward);
+            }
             return new ArenaReport
             {
                 Round = round,
-                TrainingSetup = Describe(training),
+                TrainingSetup = (lessons.Count > 1 ? "a mix of " : "") + setup,
                 Instances = instances,
                 Control = control,
+                PureDuel = pureDuel,
+                Yardsticks = yardsticks,
                 Best = best,
+                Improved = improved,
+                BestSoFarPolicy = bestSoFarPolicy,
+                BestSoFar = bestSoFar,
+                BestSoFarRound = bestSoFarRound,
+                MarginOverYardsticks = bestSoFar.MeanReward - bestYardstick,
+                NoiseFloor = 2f * RewardSpread / (float)Math.Sqrt(Math.Max(1, Options.EvalEpisodes)),
                 Seconds = (DateTime.UtcNow - started).TotalSeconds,
             };
         }
+
+        /// <summary>The standard deviation of one encounter's reward, measured at about 4.1 on the judged setup.</summary>
+        public const float RewardSpread = 4.1f;
 
         public static string Describe(ArenaConfig c)
         {
@@ -284,8 +406,9 @@ namespace Hunted.Core.Arena
         /// <summary>
         /// Plays <paramref name="episodes"/> encounters with a copy of the policy that neither
         /// explores nor learns (or with the Stage 2 rules when <paramref name="policyText"/> is
-        /// null) and reports how it did. Same seed, same encounters, so policies are compared
-        /// on equal terms.
+        /// null) and reports how it did. The rooms, start positions and spare spears of
+        /// encounter N depend only on the seed and N, so two policies judged on the same seed
+        /// meet the same encounters; what they do in them, and the damage rolls, still differ.
         /// </summary>
         public static EvalResult Evaluate(ArenaConfig config, string policyText, int episodes, int seed)
         {
@@ -307,7 +430,7 @@ namespace Hunted.Core.Arena
                 if (r.Won) result.Wins++;
                 else if (r.Outcome == EpisodeOutcome.LearnerDied) result.Deaths++;
                 else if (r.Outcome == EpisodeOutcome.BothDied) result.Trades++;
-                else result.Timeouts++;
+                else result.Draws++;
                 result.MeanReward += r.LearnerReward;
                 result.MeanTicks += r.Ticks;
             }
@@ -317,6 +440,20 @@ namespace Hunted.Core.Arena
                 result.MeanTicks /= episodes;
             }
             return result;
+        }
+
+        /// <summary>The text of a policy whose network always scores <paramref name="tactic"/> highest: a fixed-tactic yardstick.</summary>
+        public static string ConstantPolicy(Tactic tactic)
+        {
+            var net = new TinyNet(TacticFeatures.Count, 1, TacticPolicy.TacticCount, 0);
+            string[] parts = net.Serialize().Split(',');
+            // Layer sizes and version first, then every weight: zero them all except the chosen output's bias.
+            for (int i = 4; i < parts.Length; i++)
+            {
+                parts[i] = "0";
+            }
+            parts[parts.Length - TacticPolicy.TacticCount + (int)tactic] = "1";
+            return "v=" + TacticPolicy.Version + "|net=" + string.Join(",", parts);
         }
 
         /// <summary>One round from scratch: the simplest way to use the trainer.</summary>

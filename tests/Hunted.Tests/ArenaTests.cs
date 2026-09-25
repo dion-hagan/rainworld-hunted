@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Hunted.Core;
 using Hunted.Core.Arena;
@@ -9,6 +10,14 @@ namespace Hunted.Tests
     public class ArenaTests
     {
         private static ArenaConfig FixedRoom() => new ArenaConfig { RandomRooms = false };
+
+        private static TacticPolicy ParseConstant(Tactic t, int seed)
+        {
+            Assert.True(TacticPolicy.TryParse(ArenaTrainer.ConstantPolicy(t), TacticFeatures.Count, seed, out TacticPolicy p));
+            p.FixedEpsilon = 0f;
+            p.LearningRate = 0f;
+            return p;
+        }
 
         [Fact]
         public void LineOfSightIsBlockedByCratesAndPlatforms()
@@ -39,6 +48,24 @@ namespace Hunted.Tests
             Assert.Equal(0f, ground.Value.Y, 1);
 
             Assert.Null(room.FirstSolidHit(new Vec2(100f, 200f), new Vec2(140f, 200f), out _));
+        }
+
+        [Fact]
+        public void AThrownSpearDropsLikeTheGames()
+        {
+            // Weapon.Thrown: 40 px per tick; Spear.Update while thrown: 0.9 gravity with 0.45 added back.
+            var p = new Projectile(WeaponKind.Spear, new Fighter("t"), new Vec2(0f, 100f), new Vec2(Projectile.Speed, 0f));
+            for (int i = 0; i < 8; i++)
+            {
+                p.Advance();
+            }
+            Assert.Equal(320f, p.Pos.X, 1);
+            Assert.InRange(100f - p.Pos.Y, 14f, 17f);   // about 13 px over 300 px, 38 over 520
+            for (int i = 0; i < 5; i++)
+            {
+                p.Advance();
+            }
+            Assert.InRange(100f - p.Pos.Y, 38f, 42f);
         }
 
         [Fact]
@@ -95,12 +122,122 @@ namespace Hunted.Tests
         }
 
         [Fact]
-        public void ScriptedFightersAreEvenlyMatchedAndFightsEnd()
+        public void ThePureDuelIsEvenAndFightsEnd()
         {
-            EvalResult control = ArenaTrainer.Evaluate(new ArenaConfig(), null, 300, 5);
-            Assert.InRange(control.WinRate, 0.3f, 0.7f);
-            Assert.True(control.Timeouts < 150, control.Timeouts + " of 300 encounters were draws");
-            Assert.True(control.MeanTicks < 2000f, "encounters average " + control.MeanTicks + " ticks");
+            // Stage 2 rules on both sides, no player-like rules: the arena's fairness check.
+            var pure = new ArenaConfig { OpponentAvoidsExposure = false, OpponentPatienceTicks = 0 };
+            EvalResult duel = ArenaTrainer.Evaluate(pure, null, 2000, 5);
+            Assert.InRange(duel.WinRate - duel.DeathRate, -0.06f, 0.06f);
+            Assert.True(duel.Draws < 400, duel.Draws + " of 2000 encounters were draws");
+            Assert.True(duel.MeanTicks < 2000f, "encounters average " + duel.MeanTicks + " ticks");
+        }
+
+        [Fact]
+        public void TheControlIsTheAlwaysThrowPolicy()
+        {
+            // The Stage 2 rules in the learner's seat and a policy that always picks Throw are the
+            // same fighter, so the control is scored on the same scale as every learned policy.
+            EvalResult control = ArenaTrainer.Evaluate(new ArenaConfig(), null, 500, 7);
+            EvalResult throwAlways = ArenaTrainer.Evaluate(new ArenaConfig(), ArenaTrainer.ConstantPolicy(Tactic.Throw), 500, 7);
+            Assert.True(control.SameOutcomesAs(throwAlways), control + " vs " + throwAlways);
+            Assert.NotEqual(0f, control.MeanReward);
+        }
+
+        [Fact]
+        public void TwoPoliciesOnOneSeedMeetTheSameEncounters()
+        {
+            var a = new ArenaMatch(new ArenaConfig(), 31, null);
+            var b = new ArenaMatch(new ArenaConfig(), 31, ParseConstant(Tactic.Wait, 31));
+            for (int i = 0; i < 10; i++)
+            {
+                a.RunEpisode();
+                b.RunEpisode();
+                Assert.Equal(a.Room.Width, b.Room.Width);
+                Assert.Equal(a.Room.Surfaces.Count, b.Room.Surfaces.Count);
+                for (int k = 0; k < a.Room.Surfaces.Count; k++)
+                {
+                    Assert.Equal(a.Room.Surfaces[k].X0, b.Room.Surfaces[k].X0);
+                    Assert.Equal(a.Room.Surfaces[k].Y, b.Room.Surfaces[k].Y);
+                }
+            }
+        }
+
+        [Fact]
+        public void NobodyThrowingEndsTheEncounterWhenTheOpponentLosesPatience()
+        {
+            var config = new ArenaConfig { RandomRooms = false, LearnerGear = WeaponKind.None, OpponentGear = WeaponKind.None, SpareSpears = 0, OpponentPatienceTicks = 200 };
+            var match = new ArenaMatch(config, 2, null);
+            EpisodeResult r = match.RunEpisode();
+            Assert.Equal(EpisodeOutcome.OpponentLeft, r.Outcome);
+            Assert.Equal(200, r.Ticks);
+            config.OpponentPatienceTicks = 0;
+            r = match.RunEpisode();
+            Assert.Equal(EpisodeOutcome.Timeout, r.Outcome);
+            Assert.Equal(config.MaxTicks, r.Ticks);
+        }
+
+        [Fact]
+        public void TheOpponentNeverClimbsTowardAnArmedLearnerAbove()
+        {
+            // The learner waits on the high platform of the fixed room; the opponent starts on the
+            // floor under it. With the player-like rule it holds at the foot of the pole; without
+            // it (the pure Stage 2 rules) it climbs.
+            foreach (bool avoids in new[] { true, false })
+            {
+                var config = new ArenaConfig { RandomRooms = false, OpponentAvoidsExposure = avoids, OpponentPatienceTicks = 0, MaxTicks = 600, SpareSpears = 0 };
+                var match = new ArenaMatch(config, 40, ParseConstant(Tactic.Wait, 40));
+                bool climbed = false;
+                match.OnTick = m =>
+                {
+                    if (m.Tick == 1)
+                    {
+                        ArenaRoom room = m.Room;
+                        m.Learner.Reset(new Vec2(600f, 260f), room.SurfaceAt(600f, 260f), WeaponKind.Spear);
+                        m.Opponent.Reset(new Vec2(560f, 0f), room.Floor, WeaponKind.Spear);
+                    }
+                    if (m.Opponent.OnPole != null || (m.Opponent.Ground == null && m.Opponent.Vel.Y > 0f))
+                    {
+                        climbed = true;
+                    }
+                };
+                match.RunEpisode();
+                Assert.Equal(!avoids, climbed);
+            }
+        }
+
+        [Fact]
+        public void ContactHoldsForAHundredTicksLikeTheGamesTracker()
+        {
+            // Both stand on the floor of the fixed room with a crate between them (no sight), stunned
+            // so nobody moves or throws. The encounter opens with a fix (contact), which the tracker
+            // keeps for 100 ticks before looking again; from then on since_seen counts up from zero,
+            // and 400 ticks after that the Pursuer's Sense gives a fresh fix through the crate.
+            var config = new ArenaConfig { RandomRooms = false, LearnerGear = WeaponKind.None, OpponentGear = WeaponKind.None, SpareSpears = 0, OpponentPatienceTicks = 0, MaxTicks = 700 };
+            var match = new ArenaMatch(config, 3, null);
+            var seenAt = new Dictionary<int, bool>();
+            var sinceAt = new Dictionary<int, int>();
+            match.OnTick = m =>
+            {
+                if (m.Tick == 1)
+                {
+                    m.Learner.Reset(new Vec2(300f, 0f), m.Room.Floor, WeaponKind.None);
+                    m.Opponent.Reset(new Vec2(420f, 0f), m.Room.Floor, WeaponKind.None);   // the crate at 340..380 hides it
+                    m.Learner.Stun = 700;
+                    m.Opponent.Stun = 700;
+                }
+                seenAt[m.Tick] = m.LearnerBrain.Seen;
+                sinceAt[m.Tick] = m.LearnerBrain.TicksSinceSeen;
+            };
+            match.RunEpisode();
+            Assert.True(seenAt[50], "contact should still hold at tick 50");
+            Assert.Equal(0, sinceAt[50]);
+            Assert.True(seenAt[100], "contact should still hold at tick 100");
+            Assert.False(seenAt[102], "after 100 ticks the tracker looks again and finds the crate in the way");
+            Assert.Equal(0, sinceAt[100]);
+            Assert.Equal(50, sinceAt[150]);
+            Assert.Equal(300, sinceAt[400]);
+            Assert.True(seenAt[502], "the sense fix should have set contact");
+            Assert.Equal(0, sinceAt[502]);
         }
 
         [Fact]
@@ -132,7 +269,6 @@ namespace Hunted.Tests
             var policy = new TacticPolicy(TacticFeatures.Count, 4);
             var config = new ArenaConfig { RandomRooms = false, SpareSpears = 0, LearnerGear = WeaponKind.ExplosiveSpear, OpponentGear = WeaponKind.None };
             var match = new ArenaMatch(config, 4, policy);
-            // Step by hand until the first decision, before anything can be thrown away.
             match.RunEpisode();
             float[] s = match.LearnerBrain.LastSituation;
             Assert.Equal(1f, s[8], 2);       // explosive spear: value 3 over 3
@@ -153,16 +289,43 @@ namespace Hunted.Tests
         }
 
         [Fact]
-        public void LearnerImprovesOnTheScriptedRules()
+        public void LearnerBeatsTheControlAndEveryFixedTactic()
         {
-            // Two instances, 1500 encounters each, judged over 600 encounters with exploration off.
-            // Across seeds 21..26 the best instance's reward margin over the control was +0.68 to +1.43;
-            // the threshold sits well under that. (The duel is symmetric, so the margin is mostly
-            // fewer deaths and wasted throws, not a huge win rate.)
-            var options = new ArenaRunOptions { Instances = 2, Episodes = 1500, EvalEpisodes = 600, Seed = 21, Threads = 2 };
+            // Four instances, 30 000 encounters each, judged over 4000 encounters with exploration off.
+            // The bar a baseline must clear to be shipped: better than the scored control and better
+            // than every always-one-tactic policy by more than the noise floor. Over seeds 21..26 the
+            // margin over the control was +0.51..+0.78 and over the best fixed tactic (always Wait)
+            // +0.02..+0.36 at a 10 000-encounter judge; this seed is not the luckiest of them.
+            var options = new ArenaRunOptions { Instances = 4, Episodes = 30000, EvalEpisodes = 4000, Seed = 22, Threads = 4 };
             ArenaReport report = ArenaTrainer.Run(options);
             EvalResult learned = report.Best.Eval;
             Assert.True(learned.MeanReward > report.Control.MeanReward + 0.3f, "learned " + learned + " vs control " + report.Control);
+            for (int t = 0; t < report.Yardsticks.Length; t++)
+            {
+                Assert.True(learned.MeanReward > report.Yardsticks[t].MeanReward, "learned " + learned + " vs always " + (Tactic)t + " " + report.Yardsticks[t]);
+            }
+            Assert.True(report.ClearsBar, "margin over always-" + report.BestYardstick + " is " + report.MarginOverYardsticks + ", noise floor " + report.NoiseFloor);
+        }
+
+        [Fact]
+        public void TheBaselineOnlyAdvancesWhenARoundBeatsTheIncumbent()
+        {
+            var options = new ArenaRunOptions { Instances = 1, Episodes = 200, EvalEpisodes = 200, Seed = 15, Threads = 1 };
+            var trainer = new ArenaTrainer(options);
+            ArenaReport first = trainer.RunRound(200);
+            Assert.True(first.Improved);
+            Assert.Equal(1, first.BestSoFarRound);
+            string incumbent = first.BestSoFarPolicy;
+            // A sabotaged round: one-tick encounters make no decisions, so the policy cannot change
+            // and its judged score is identical, which is not an improvement.
+            ArenaReport second = trainer.RunRound(200, new[] { new ArenaConfig { MaxTicks = 1 } });
+            Assert.False(second.Improved);
+            Assert.Equal(1, second.BestSoFarRound);
+            Assert.Equal(incumbent, second.BestSoFarPolicy);
+            Assert.Equal(first.BestSoFar.MeanReward, second.BestSoFar.MeanReward);
+            Assert.NotNull(second.Yardsticks);
+            Assert.Equal(TacticPolicy.TacticCount, second.Yardsticks.Length);
+            Assert.NotNull(second.PureDuel);
         }
 
         [Fact]
@@ -188,21 +351,34 @@ namespace Hunted.Tests
         [Fact]
         public void ARoundCanTrainOnAnotherSetupThanItIsJudgedOn()
         {
-            var options = new ArenaRunOptions { Instances = 1, Episodes = 4, EvalEpisodes = 2, Seed = 12, Threads = 1 };
+            var options = new ArenaRunOptions { Instances = 1, Episodes = 4, EvalEpisodes = 20, Seed = 12, Threads = 1 };
             var trainer = new ArenaTrainer(options);
             var lesson = new ArenaConfig { MaxTicks = 1, OpponentGear = WeaponKind.None };
-            ArenaReport first = trainer.RunRound(4, lesson);
+            ArenaReport first = trainer.RunRound(4, new[] { lesson });
             foreach (EpisodeResult e in first.Instances[0].Episodes)
             {
                 Assert.Equal(1, e.Ticks);
             }
             Assert.Contains("spear vs none", first.TrainingSetup);
             Assert.True(first.Control.MeanTicks > 1f, "the judge must use the options' setup, not the lesson");
+            Assert.Equal(20, first.Control.Episodes);
             ArenaReport second = trainer.RunRound(4);
             Assert.Equal(2, second.Round);
             Assert.Equal(8, second.Instances[0].TotalEpisodes);
             Assert.Equal(4, second.Instances[0].Episodes.Count);
             Assert.True(second.Instances[0].Episodes[0].Ticks > 1);
+        }
+
+        [Fact]
+        public void LessonsAreMixedEncounterByEncounter()
+        {
+            var options = new ArenaRunOptions { Instances = 1, Episodes = 6, EvalEpisodes = 2, Seed = 13, Threads = 1 };
+            var trainer = new ArenaTrainer(options);
+            var lessons = new[] { new ArenaConfig { MaxTicks = 1 }, new ArenaConfig { MaxTicks = 2 }, new ArenaConfig { MaxTicks = 3 } };
+            ArenaReport report = trainer.RunRound(6, lessons);
+            List<EpisodeResult> episodes = report.Instances[0].Episodes;
+            Assert.Equal(new[] { 1, 2, 3, 1, 2, 3 }, new[] { episodes[0].Ticks, episodes[1].Ticks, episodes[2].Ticks, episodes[3].Ticks, episodes[4].Ticks, episodes[5].Ticks });
+            Assert.StartsWith("a mix of ", report.TrainingSetup);
         }
 
         [Fact]
@@ -257,6 +433,30 @@ namespace Hunted.Tests
         }
 
         [Fact]
+        public void ABaselineShedsItsCountersWhenLoadedAsAPrior()
+        {
+            var trained = new TacticPolicy(TacticFeatures.Count, 5);
+            float[] x = new float[TacticFeatures.Count];
+            for (int i = 0; i < 2000; i++)
+            {
+                trained.Choose(x, i * 100);
+                trained.Reward(0.5f, i * 100 + 5);
+            }
+            trained.Flush();
+            Assert.True(trained.Epsilon < 0.06f);
+            string prior = TacticsFiles.ForBaselineLoad(trained.Serialize());
+            Assert.DoesNotContain("|d=", prior);
+            Assert.DoesNotContain("|rs=", prior);
+            Assert.True(TacticPolicy.TryParse(prior, TacticFeatures.Count, 5, out TacticPolicy loaded), prior);
+            Assert.Equal(0.3f, loaded.Epsilon, 3);
+            Assert.Equal(0, loaded.Decisions);
+            Assert.Equal(0f, loaded.RecentSurprise);
+            Assert.Equal(0f, loaded.BaselineSurprise);
+            Assert.Equal(trained.Evaluate(x), loaded.Evaluate(x));
+            Assert.Equal("", TacticsFiles.ForBaselineLoad(""));
+        }
+
+        [Fact]
         public void ForgetPatternLeavesTheArenaBaselineAlone()
         {
             string dir = Path.Combine(Path.GetTempPath(), "hunted-tactics-" + Guid.NewGuid().ToString("N"));
@@ -272,6 +472,23 @@ namespace Hunted.Tests
             finally
             {
                 Directory.Delete(dir, true);
+            }
+        }
+
+        [Fact]
+        public void DocsContainNoControlBytes()
+        {
+            string docs = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "docs"));
+            if (!Directory.Exists(docs))
+            {
+                return; // not running from the repo layout
+            }
+            foreach (string file in Directory.GetFiles(docs, "*.md"))
+            {
+                foreach (char c in File.ReadAllText(file))
+                {
+                    Assert.False(c < ' ' && c != '\n' && c != '\r' && c != '\t', file + " contains a control byte " + (int)c);
+                }
             }
         }
     }

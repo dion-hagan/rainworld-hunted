@@ -35,7 +35,7 @@
 param(
     [int]$Instances = 6,
     [int]$Episodes = 400000,
-    [int]$Eval = 2000,
+    [int]$Eval = 4000,
     [int]$Block = 10000,
     [double]$Hours = 8,
     [int]$Seed = 1,

@@ -1,16 +1,17 @@
 namespace Hunted.Core.Arena
 {
     /// <summary>
-    /// A thrown weapon in flight. Slugcat throws are horizontal; the weapon flies straight
-    /// for a while and then drops, like a spear in the game. Collisions are resolved by
-    /// the match, which knows both fighters.
+    /// A thrown weapon in flight, with the game's numbers: <c>Weapon.Thrown</c> gives it 40 px
+    /// per tick along the throw direction, and a thrown spear (<c>Spear.Update</c>) feels half
+    /// gravity (0.9 down, 0.45 back), so it drops about 13 px over 300 px and 38 px over 520.
+    /// Collisions are resolved by the match, which knows both fighters.
     /// </summary>
     public sealed class Projectile
     {
-        /// <summary>Pixels per tick. A spear crosses a screen in well under a second.</summary>
+        /// <summary>Pixels per tick along the throw (Weapon.Thrown: 40 * force, force 1).</summary>
         public const float Speed = 40f;
-        /// <summary>Ticks of level flight before gravity takes over (about 560 px, a little past the AI's throw range).</summary>
-        public const int StraightTicks = 14;
+        /// <summary>Net downward acceleration while thrown (Spear: gravity 0.9 minus 0.45 added back each tick).</summary>
+        public const float Drop = 0.45f;
 
         public readonly WeaponKind Kind;
         public readonly Fighter Thrower;
@@ -31,10 +32,7 @@ namespace Hunted.Core.Arena
         {
             Vec2 prev = Pos;
             Age++;
-            if (Age > StraightTicks)
-            {
-                Vel.Y -= Fighter.Gravity;
-            }
+            Vel.Y -= Drop;
             Pos += Vel;
             return prev;
         }

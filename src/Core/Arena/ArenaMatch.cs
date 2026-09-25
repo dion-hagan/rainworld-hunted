@@ -10,6 +10,8 @@ namespace Hunted.Core.Arena
         LearnerDied,
         /// <summary>Both died in the same tick: they lined up on each other and threw together.</summary>
         BothDied,
+        /// <summary>Nobody threw for the opponent's patience: it walked away, as a person who is not being fought does.</summary>
+        OpponentLeft,
     }
 
     /// <summary>What happened in one encounter, from the learner's side.</summary>
@@ -41,7 +43,10 @@ namespace Hunted.Core.Arena
     {
         /// <summary>The setup for the next encounters; a trainer may change it between rounds (a curriculum).</summary>
         public ArenaConfig Config;
+        /// <summary>Randomness inside a fight: attack-position sampling, damage, dodges.</summary>
         public readonly Random Rng;
+        /// <summary>The room, start positions and spare spears of encounter N depend only on the seed and N, so two policies on the same seed meet the same encounters.</summary>
+        public readonly int Seed;
         public readonly Fighter Learner = new Fighter("learner");
         public readonly Fighter Opponent = new Fighter("opponent");
         public readonly ArenaBrain LearnerBrain;
@@ -62,10 +67,16 @@ namespace Hunted.Core.Arena
 
         private EpisodeResult current;
         private ArenaRoom defaultRoom;
+        private Random layoutRng;
+        private int lastThrowTick;
+
+        /// <summary>Called after every tick, for traces and tests.</summary>
+        public Action<ArenaMatch> OnTick;
 
         public ArenaMatch(ArenaConfig config, int seed, TacticPolicy learnerPolicy)
         {
             Config = config ?? new ArenaConfig();
+            Seed = seed;
             Rng = new Random(seed);
             LearnerBrain = new ArenaBrain(Learner, Opponent, learnerPolicy, false, Rng);
             OpponentBrain = new ArenaBrain(Opponent, Learner, null, true, Rng);
@@ -85,6 +96,11 @@ namespace Hunted.Core.Arena
                     current.Outcome = Learner.Dead && Opponent.Dead ? EpisodeOutcome.BothDied : Learner.Dead ? EpisodeOutcome.LearnerDied : EpisodeOutcome.LearnerWon;
                     break;
                 }
+                if (Config.OpponentPatienceTicks > 0 && Tick - lastThrowTick >= Config.OpponentPatienceTicks)
+                {
+                    current.Outcome = EpisodeOutcome.OpponentLeft;
+                    break;
+                }
             }
             current.Ticks = Tick;
             current.Epsilon = Policy != null ? Policy.Epsilon : 0f;
@@ -100,9 +116,15 @@ namespace Hunted.Core.Arena
         private void StartEpisode()
         {
             Tick = 0;
+            lastThrowTick = 0;
+            layoutRng = new Random(unchecked(Seed * 7919 + Episode));
             if (Config.RandomRooms)
             {
-                Room = ArenaRoom.Generate(Rng);
+                Room = ArenaRoom.Generate(layoutRng);
+            }
+            else if (Config.FixedRoom != null)
+            {
+                Room = Config.FixedRoom;
             }
             else if (!ReferenceEquals(Room, defaultRoom))
             {
@@ -130,8 +152,8 @@ namespace Hunted.Core.Arena
 
         private Vec2 RandomSpot()
         {
-            Surface s = Room.Surfaces[Rng.Next(Room.Surfaces.Count)];
-            float x = s.X0 + 20f + (float)Rng.NextDouble() * Math.Max(1f, s.X1 - s.X0 - 40f);
+            Surface s = Room.Surfaces[layoutRng.Next(Room.Surfaces.Count)];
+            float x = s.X0 + 20f + (float)layoutRng.NextDouble() * Math.Max(1f, s.X1 - s.X0 - 40f);
             return new Vec2(x, s.Y);
         }
 
@@ -144,11 +166,13 @@ namespace Hunted.Core.Arena
             {
                 Projectiles.Add(a);
                 current.LearnerThrows++;
+                lastThrowTick = Tick;
             }
             if (b != null)
             {
                 Projectiles.Add(b);
                 current.OpponentThrows++;
+                lastThrowTick = Tick;
             }
             Learner.Step(Room);
             Opponent.Step(Room);
@@ -159,7 +183,7 @@ namespace Hunted.Core.Arena
                 Projectile p = Projectiles[i];
                 Vec2 prev = p.Advance();
                 Fighter victim = ReferenceEquals(p.Thrower, Learner) ? Opponent : Learner;
-                if (!victim.Dead && SegmentHitsCircle(prev, p.Pos, victim.Eye, Fighter.Radius))
+                if (!victim.Dead && (SegmentHitsCircle(prev, p.Pos, victim.MainChunk, Fighter.ChunkRadius) || SegmentHitsCircle(prev, p.Pos, victim.LowerChunk, Fighter.ChunkRadius)))
                 {
                     Projectiles.RemoveAt(i);
                     OnHit(p, victim);
@@ -177,6 +201,7 @@ namespace Hunted.Core.Arena
                     Projectiles.RemoveAt(i);
                 }
             }
+            OnTick?.Invoke(this);
         }
 
         private void PickUp(Fighter f)
@@ -242,14 +267,11 @@ namespace Hunted.Core.Arena
             }
         }
 
+        /// <summary>Scores the learner's seat whether or not a policy is learning there, so the control is measured on the same scale.</summary>
         private void Reward(float value, bool throwOutcome)
         {
-            if (Policy == null)
-            {
-                return;
-            }
-            Policy.Reward(value, Tick, throwOutcome);
             current.LearnerReward += value;
+            Policy?.Reward(value, Tick, throwOutcome);
         }
 
         internal void CountDecision()

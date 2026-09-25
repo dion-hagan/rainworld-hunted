@@ -72,8 +72,8 @@ namespace Hunted.Core
 
         public int Features { get; }
         public int Decisions { get; private set; }
-        /// <summary>Called with (features, tactic, credit) each time a decision is trained; the arena uses it to log a dataset.</summary>
-        public Action<float[], int, float> OnTrained;
+        /// <summary>Called with (features, tactic, credit) each time a decision is trained; the arena tool logs a dataset with it. Not part of the game's surface.</summary>
+        internal Action<float[], int, float> OnTrained;
         public int Rewards { get; private set; }
         public float TotalReward { get; private set; }
 

@@ -11,8 +11,14 @@ namespace Hunted.Core.Arena
     /// </summary>
     public sealed class Fighter
     {
+        /// <summary>Half the body's width; also the crate push-out margin.</summary>
         public const float Radius = 14f;
-        public const float EyeHeight = 15f;
+        /// <summary>A slugcat is two body chunks: the lower one just off the ground and the main one above it (Player chunk radius is about 9).</summary>
+        public const float ChunkRadius = 10f;
+        public const float LowerChunkHeight = 9f;
+        public const float MainChunkHeight = 27f;
+        /// <summary>The main chunk is where the game looks from, throws from and aims at.</summary>
+        public const float EyeHeight = MainChunkHeight;
         public const float WalkSpeed = 4.4f;
         public const float ClimbSpeed = 3f;
         public const float JumpVelocity = 12f;
@@ -38,6 +44,8 @@ namespace Hunted.Core.Arena
         public bool Jump;
         public int Climb;
         public Pole WantPole;
+        /// <summary>Set by the brain: do not start a climb or a jump this tick (someone armed is watching); hold at the foot instead.</summary>
+        public bool HoldClimbs;
 
         public Fighter(string name)
         {
@@ -46,6 +54,8 @@ namespace Hunted.Core.Arena
 
         public bool Dead => Health <= 0f;
         public Vec2 Eye => new Vec2(Pos.X, Pos.Y + EyeHeight);
+        public Vec2 MainChunk => new Vec2(Pos.X, Pos.Y + MainChunkHeight);
+        public Vec2 LowerChunk => new Vec2(Pos.X, Pos.Y + LowerChunkHeight);
 
         public void Reset(Vec2 pos, Surface ground, WeaponKind held)
         {
@@ -57,9 +67,11 @@ namespace Hunted.Core.Arena
             Stun = 0;
             Held = held;
             ThrowCooldown = 0;
+            HoldClimbs = false;
             ClearInputs();
         }
 
+        /// <summary>Clears the movement inputs (not <see cref="HoldClimbs"/>, which the brain sets before steering).</summary>
         public void ClearInputs()
         {
             MoveX = 0;
@@ -115,6 +127,11 @@ namespace Hunted.Core.Arena
                     WalkToward(aimX - Pos.X);
                     if (Pos.X >= above.X0 - 30f && Pos.X <= above.X1 + 30f)
                     {
+                        if (HoldClimbs)
+                        {
+                            MoveX = 0; // wait under it until it is safe to go up
+                            return;
+                        }
                         Jump = true;
                     }
                     JumpOverCrate(room);
@@ -125,7 +142,10 @@ namespace Hunted.Core.Arena
                 {
                     if (Math.Abs(pole.X - Pos.X) <= 5f)
                     {
-                        WantPole = pole;
+                        if (!HoldClimbs)
+                        {
+                            WantPole = pole;
+                        }
                     }
                     else
                     {
@@ -168,6 +188,11 @@ namespace Hunted.Core.Arena
             Crate crate = room.CrateAhead(Pos.X, Pos.Y, MoveX * 30f);
             if (crate != null && crate.Y1 - Pos.Y <= JumpReach)
             {
+                if (HoldClimbs)
+                {
+                    MoveX = 0; // stay behind the crate rather than jump into view
+                    return;
+                }
                 Jump = true;
             }
         }
@@ -351,10 +376,10 @@ namespace Hunted.Core.Arena
         /// <summary>True when a throw can leave the hand this tick: something held, not stunned, not just thrown.</summary>
         public bool CanThrow => Held != WeaponKind.None && Stun == 0 && ThrowCooldown == 0;
 
-        /// <summary>Lets go of the held weapon as a projectile flying in <paramref name="direction"/> (-1 or 1).</summary>
+        /// <summary>Lets go of the held weapon as a projectile flying level from the main chunk in <paramref name="direction"/> (-1 or 1).</summary>
         public Projectile Throw(int direction)
         {
-            var p = new Projectile(Held, this, new Vec2(Pos.X + direction * (Radius + 4f), Pos.Y + EyeHeight), new Vec2(direction * Projectile.Speed, 0f));
+            var p = new Projectile(Held, this, new Vec2(Pos.X + direction * (Radius + 4f), Pos.Y + MainChunkHeight), new Vec2(direction * Projectile.Speed, 0f));
             Held = WeaponKind.None;
             ThrowCooldown = 10;
             Facing = direction;

@@ -36,7 +36,7 @@ While it is armed and engaging, the mode also shows the **tactic** it picked
 tactics** on, a small network chooses the tactic every half second from the
 situation (distance, height, whether you are armed or moving, its own weapon and
 threat) and is trained by what happens next: a hit on you is +1 (+2 for heavy
-damage), killing you +3, a throw into a wall -0.2 (hits and wall throws are credited only to the decision that threw), getting hurt -1, dying -3. Decisions that nothing followed are trained toward zero when their two-second window closes.
+damage), killing you +3, a throw into a wall -0.2 (hits and wall throws are credited only to the decision that threw), getting hurt -0.25 to -1 (with the damage), dying -3. A rock that only stuns is +0.5. Decisions that nothing followed are trained toward zero when their two-second window closes.
 
 A share of decisions is random so it keeps exploring: 30% on a fresh file, halving
 every 300 decisions down to a 5% floor. When outcomes keep surprising its estimates
@@ -52,8 +52,10 @@ off it always throws, which is the old behaviour.
 
 A slot with nothing learned yet starts from `dion_hunted_baseline_tactics.txt` in the
 same folder if that file exists: a policy trained headless against the Stage 2 rules by
-the [arena](arena.md). F12 and the Remix button go back to it rather than to random
-weights; delete the file to start truly fresh. The log says which it loaded.
+the [arena](arena.md). Only its network comes along: exploration starts at 30% as on a
+fresh slot and the surprise averages seed from your play. F12 and the Remix button go
+back to it rather than to random weights; delete the file to start truly fresh. The log
+says which it loaded, or why it rejected the file.
 
 ## Reading the overlay
 

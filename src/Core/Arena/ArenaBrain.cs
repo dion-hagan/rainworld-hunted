@@ -30,6 +30,8 @@ namespace Hunted.Core.Arena
         public const int TacticHoldTicks = 20;
         public const float ThrowRangePx = 520f;
         public const float ScavengeRangePx = 600f;
+        /// <summary>The game's tracker (SlugNPCAI's, seeAroundCorners = 100) keeps visual contact for this long after the last sighting and only then looks again.</summary>
+        public const int SeeAroundCornersTicks = 100;
         private const int EngageMemoryTicks = 200;
         private const int RememberTargetTicks = 40 * 30;
         private const int SenseInterval = 40 * 8;
@@ -45,14 +47,16 @@ namespace Hunted.Core.Arena
 
         public Mode CurrentMode { get; private set; } = Mode.Travel;
         public Tactic Tactic { get; private set; } = Tactic.Throw;
+        /// <summary>The tracker's VisualContact: true from a sighting (or a sense fix) until 100 ticks later, when it looks again.</summary>
         public bool Seen { get; private set; }
-        public int TicksSinceSeen { get; private set; } = int.MaxValue / 2;
+        /// <summary>The tracker's TicksSinceSeen: ticks since the last sighting minus the 100 it keeps contact for, never below zero.</summary>
+        public int TicksSinceSeen => Math.Max(0, contactTicks - SeeAroundCornersTicks);
 
         private readonly Random rng;
         private readonly float[] situation = new float[TacticFeatures.Count];
         private readonly List<Vec2> previousAttackPositions = new List<Vec2>();
         private Vec2 lastSeen;
-        private bool everSeen;
+        private int contactTicks;
         private int senseCooldown;
         private int tacticTicks;
         private int throwAtTarget;
@@ -77,10 +81,12 @@ namespace Hunted.Core.Arena
         {
             CurrentMode = Mode.Travel;
             Tactic = Tactic.Throw;
-            Seen = false;
-            TicksSinceSeen = int.MaxValue / 2;
-            everSeen = false;
-            senseCooldown = 0;
+            // In the game the Pursuer arrives with a fix on the player in its room (Sense gives one
+            // when the tracker has no representation yet), so the encounter opens with contact.
+            Seen = true;
+            contactTicks = 0;
+            lastSeen = Them.Pos;
+            senseCooldown = SenseInterval;
             tacticTicks = 0;
             throwAtTarget = 0;
             turnDelay = 0;
@@ -104,24 +110,29 @@ namespace Hunted.Core.Arena
                 senseCooldown--;
             }
 
-            // Perception: eyes, plus the game's periodic fix on a target lost for a long time.
-            Seen = !Them.Dead && room.LineOfSight(Me.Eye, Them.Eye);
+            // Perception, as the game's Tracker.CreatureRepresentation does it: contact holds for
+            // 100 ticks after a sighting without looking again; after that it looks every tick
+            // and a sighting resets the clock. The Pursuer's Sense() adds a fix (contact set even
+            // through walls) once the tracker reports the target lost for over 400 ticks.
+            contactTicks++;
+            if (contactTicks > SeeAroundCornersTicks)
+            {
+                Seen = false;
+                if (!Them.Dead && room.LineOfSight(Me.Eye, Them.Eye))
+                {
+                    contactTicks = 0;
+                    Seen = true;
+                }
+            }
+            if (!Them.Dead && senseCooldown == 0 && TicksSinceSeen > SenseAfterLostTicks)
+            {
+                contactTicks = 0;
+                Seen = true;
+                senseCooldown = SenseInterval;
+            }
             if (Seen)
             {
                 lastSeen = Them.Pos;
-                TicksSinceSeen = 0;
-                everSeen = true;
-            }
-            else if (TicksSinceSeen < int.MaxValue / 2)
-            {
-                TicksSinceSeen++;
-            }
-            if (!Seen && !Them.Dead && TicksSinceSeen > SenseAfterLostTicks && senseCooldown == 0)
-            {
-                lastSeen = Them.Pos;
-                TicksSinceSeen = 0;
-                everSeen = true;
-                senseCooldown = SenseInterval;
             }
 
             if (Me.Stun > 0)
@@ -143,7 +154,7 @@ namespace Hunted.Core.Arena
                 CurrentMode = Mode.Scavenge;
                 target = match.NearestBetterItem(Me.Pos, held, float.MaxValue).Pos;
             }
-            else if (everSeen && TicksSinceSeen < RememberTargetTicks)
+            else if (TicksSinceSeen < RememberTargetTicks)
             {
                 CurrentMode = Mode.Search;
                 target = lastSeen;
@@ -154,6 +165,12 @@ namespace Hunted.Core.Arena
                 target = Them.Pos;
             }
 
+            // A person does not climb a pole or jump a crate up toward an armed Pursuer standing
+            // above within throwing distance; the pure Stage 2 rules would, and hand a waiting
+            // learner free throws on the way up. No sight test: the learner's own platform hides
+            // the foot of the pole, and the climb would be seen halfway up regardless.
+            Me.HoldClimbs = IsOpponent && match.Config.OpponentAvoidsExposure && Them.Held != WeaponKind.None && Them.Stun == 0
+                && Math.Abs(Them.Pos.X - Me.Pos.X) <= ThrowRangePx && Them.Pos.Y > Me.Pos.Y + 12f;
             Me.Steer(room, target);
 
             Projectile thrown = null;
@@ -282,8 +299,11 @@ namespace Hunted.Core.Arena
 
         /// <summary>
         /// Keeps the current attack position while it is still lined up on the target and not
-        /// too old; otherwise samples spots level with the target, in sight and at throwing
-        /// distance, avoiding spots it has used before (the game's search, simplified).
+        /// too old; otherwise samples spots in sight of the target and scores them the way the
+        /// game's <c>SpearThrowPositionScore</c> does: a spot level with the target (a horizontal
+        /// throw can reach it) is worth a hundred times an off-level one, near spots are worth
+        /// double, very far and very close spots are marked down, off-level spots are only
+        /// acceptable from a distance, and spots used before are avoided.
         /// </summary>
         private void FindAttackPosition(ArenaMatch match)
         {
@@ -320,21 +340,17 @@ namespace Hunted.Core.Arena
                     continue;
                 }
                 float dist = Vec2.Distance(candidate, Them.Pos);
-                float score = 100f;
-                if (Lined(room, Eye(candidate), Them.Eye))
+                float dy = Math.Abs(candidate.Y - Them.Pos.Y);
+                float score = dy <= 12f ? 100f : 1f;
+                if (Vec2.Distance(candidate, Me.Pos) < 60f)
                 {
-                    score += 40f;
+                    score *= 2f;
                 }
-                if (dist > ThrowRangePx)
+                score *= LerpMap(dist, 600f, 1200f, 1f, 0f);
+                score *= LerpMap(dist, 100f, 0f, 1f, 0.1f);
+                if (dy >= 60f)
                 {
-                    score -= 60f;
-                }
-                score -= Math.Abs(dist - 300f) / 10f;
-                float travel = Vec2.Distance(candidate, Me.Pos);
-                score -= travel / 40f;
-                if (travel < 60f)
-                {
-                    score += 30f;
+                    score *= Clamp((dist - 100f) / 100f, 0f, 1f);
                 }
                 for (int n = 1; n < previousAttackPositions.Count; n++)
                 {
@@ -373,5 +389,12 @@ namespace Hunted.Core.Arena
         private static Vec2 Eye(Vec2 feet) => new Vec2(feet.X, feet.Y + Fighter.EyeHeight);
 
         private static float Clamp(float v, float lo, float hi) => v < lo ? lo : v > hi ? hi : v;
+
+        /// <summary>The game's Custom.LerpMap: maps <paramref name="v"/> from [a, b] onto [x, y], clamped.</summary>
+        private static float LerpMap(float v, float a, float b, float x, float y)
+        {
+            float t = Clamp((v - a) / (b - a), 0f, 1f);
+            return x + (y - x) * t;
+        }
     }
 }
