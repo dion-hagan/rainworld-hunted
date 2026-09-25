@@ -59,16 +59,28 @@ tracking by a cycle, change its gear, kill it or reset it, plus the on-screen tr
 - **Death.** Its gear drops where it dies. Killing it does not cost you scavenger
   reputation.
 
+## Training the tactics without playing
+
+The adaptive tactics can be pre-trained headless: [docs/arena.md](docs/arena.md)
+describes the arena, a simulation of the fight that pits the learning Pursuer against
+the Stage 2 rules, several instances at once, and writes a baseline tactics file the
+mod loads for any save slot that has nothing learned yet.
+
+```powershell
+dotnet run --project tools/Hunted.Arena -c Release -- --instances 6 --episodes 2000 --rounds 3
+```
+
 ## Building
 
 ```powershell
 dotnet build src/Hunted.csproj      # needs Rain World installed (see Directory.Build.props)
-dotnet test tests/Hunted.Tests      # game-independent: parser, graph, tracker, save format
+dotnet test tests/Hunted.Tests      # game-independent: parser, graph, tracker, save format, arena
 ./scripts/deploy.ps1                # build + copy into the game's mods folder
 ```
 
 The game-independent half (`src/Core`) has no game references and is covered by
-xunit tests; the `Game` half is the hooks and the session runtime.
+xunit tests; the `Game` half is the hooks and the session runtime. `tools/Hunted.Arena`
+is the headless trainer, built from the core alone.
 
 ## Status
 

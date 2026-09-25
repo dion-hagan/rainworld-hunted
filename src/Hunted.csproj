@@ -17,6 +17,11 @@
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 
+  <!-- The headless arena (tools/Hunted.Arena) is built from Core too, but the game never runs it. -->
+  <ItemGroup>
+    <Compile Remove="Core\Arena\**" />
+  </ItemGroup>
+
   <!-- BepInEx + MonoMod HookGen output (the On.X.Y hook API), from the game's own folders -->
   <ItemGroup>
     <Reference Include="BepInEx">

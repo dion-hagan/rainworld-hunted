@@ -17,3 +17,5 @@ jobs:
         with:
           dotnet-version: 8.0.x
       - run: dotnet test tests/Hunted.Tests/Hunted.Tests.csproj --configuration Release
+      # The headless arena has no game dependency either: build it and run a short round.
+      - run: dotnet run --project tools/Hunted.Arena --configuration Release -- --instances 2 --episodes 20 --eval 10 --quiet --out ${{ runner.temp }}/arena

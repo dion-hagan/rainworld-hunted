@@ -175,6 +175,12 @@ Only worth building if Stage 2 feels too predictable after playtesting. If so, t
 - Training: behavior cloning from recorded human play first; PPO fine-tuning via an Arena-mode training harness only as a stretch goal, since in-game training is slow without a headless simulator.
 - The Stage 2 AI stays as the fallback if weights fail to load or the policy gets stuck.
 
+> **Implementation note (v0.2):** what shipped as "Stage 3" is smaller than this: a
+> contextual bandit over four Engage tactics (see `docs/testing.md`), trained online.
+> The arena-mode training harness exists as a headless simulator (`docs/arena.md`):
+> the bandit against the Stage 2 rules in a simplified room, many instances in parallel,
+> producing a baseline tactics file the mod loads as the prior for a fresh slot.
+
 ## 8. Player-Facing Design
 
 - **Map marker:** the region map shows the Pursuer's region (and shelter, on Easy) at cycle start.
