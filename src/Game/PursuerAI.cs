@@ -829,12 +829,25 @@ namespace Hunted.Game
             else if (movementConnection != default(MovementConnection))
             {
                 catchPoles = false;
-                if (((movementConnection.type == MovementConnection.MovementType.ShortCut && cat.room.GetTile(movementConnection.startCoord.Tile).Terrain == Room.Tile.TerrainType.ShortcutEntrance && cat.room.shortcutData(movementConnection.startCoord.Tile).LeadingSomewhere) || (movementConnection.type == MovementConnection.MovementType.NPCTransportation && transportDelay <= 0)) && creature.pos == movementConnection.startCoord)
+                bool creaturePipe = movementConnection.type == MovementConnection.MovementType.NPCTransportation && transportDelay <= 0;
+                bool atEntrance = creature.pos == movementConnection.startCoord;
+                if (creaturePipe && !atEntrance && BodyChunkOnTile(movementConnection.StartTile))
+                {
+                    // The game auto-enters normal pipes for a slugcat body, but creature-only pipes
+                    // (the ones scavengers and lizards use) it enters only when the AI asks, and the
+                    // slugpup rule asks once the body's abstract tile is in the mouth. That tile
+                    // follows the lower chunk, so an adult body pushing head-first into a wall pipe
+                    // never qualifies and shoves at the wall forever. Any chunk in the mouth will do:
+                    // Creature.Update pulls the rest of the body in.
+                    atEntrance = true;
+                }
+                if (((movementConnection.type == MovementConnection.MovementType.ShortCut && cat.room.GetTile(movementConnection.startCoord.Tile).Terrain == Room.Tile.TerrainType.ShortcutEntrance && cat.room.shortcutData(movementConnection.startCoord.Tile).LeadingSomewhere) || creaturePipe) && atEntrance)
                 {
                     if (movementConnection.type == MovementConnection.MovementType.NPCTransportation)
                     {
                         cat.NPCTransportationDestination = movementConnection.destinationCoord;
                         transportDelay = 80;
+                        HuntedLog.Info("[move] entering a creature pipe at " + movementConnection.StartTile.x + "," + movementConnection.StartTile.y + " toward " + movementConnection.destinationCoord.x + "," + movementConnection.destinationCoord.y);
                     }
                     cat.enteringShortCut = movementConnection.StartTile;
                 }
@@ -1026,6 +1039,19 @@ namespace Hunted.Game
             input.x = direction;
             catchPoles = poles;
             forceJump = 10;
+        }
+
+        /// <summary>True when any of the body's chunks is inside <paramref name="tile"/> of the current room.</summary>
+        private bool BodyChunkOnTile(IntVector2 tile)
+        {
+            for (int i = 0; i < cat.bodyChunks.Length; i++)
+            {
+                if (cat.room.GetTilePosition(cat.bodyChunks[i].pos) == tile)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private bool OnVerticalBeam() => cat.bodyMode == Player.BodyModeIndex.ClimbingOnBeam;

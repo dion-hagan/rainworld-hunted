@@ -80,6 +80,7 @@ HUNTED  dead  respawns at cycle 14 (now 11)
 7. **Retreat**: let it kill you (or die to anything). On the next cycle it is at least the configured retreat distance away and still has its gear.
 8. **Rain**: survive until the rain warning: it stops hunting and heads for cover (offscreen creatures stop moving; a realized one goes to its den).
 9. **Save/load**: quit to the menu and continue: the state is restored from the save file. Killing it and quitting without sleeping reverts, like the rest of the world.
+10. **Creature pipes**: the slugcat body uses the small creature-only pipes (the ones scavengers and lizards pop out of) as well as normal ones. Bring it (F6) into a room with one between you and it: it goes through instead of shoving at the wall, and the log says `[move] entering a creature pipe`.
 
 ## Where the state lives
 

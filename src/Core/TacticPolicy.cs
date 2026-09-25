@@ -73,7 +73,9 @@ namespace Hunted.Core
         public int Features { get; }
         public int Decisions { get; private set; }
         /// <summary>Called with (features, tactic, credit) each time a decision is trained; the arena tool logs a dataset with it. Not part of the game's surface.</summary>
+#pragma warning disable CS0649 // only the arena tool assigns it; the mod build never does
         internal Action<float[], int, float> OnTrained;
+#pragma warning restore CS0649
         public int Rewards { get; private set; }
         public float TotalReward { get; private set; }
 
