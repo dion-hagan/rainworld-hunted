@@ -67,13 +67,54 @@ namespace Hunted.Tests
         }
 
         [Fact]
+        public void GearFillsBothHandsAndTheBack()
+        {
+            // Hunter's loadout: a spear in one hand, a bomb in the other, a spear on the back.
+            var inv = new List<string> { GearTier.Rock, GearTier.Spear };
+            Assert.Null(GearTier.Add(inv, GearTier.ScavengerBomb));
+            Assert.Equal(new[] { GearTier.Rock, GearTier.Spear, GearTier.ScavengerBomb }, inv);
+            Assert.False(GearTier.CanCarry(new[] { GearTier.Rock, GearTier.ScavengerBomb, GearTier.Rock })); // three hand items
+            Assert.True(GearTier.CanCarry(new[] { GearTier.Rock, GearTier.ScavengerBomb, GearTier.Spear })); // the spear rides on the back
+            Assert.True(GearTier.CanCarry(new[] { GearTier.Spear, GearTier.ExplosiveSpear, GearTier.Rock }));
+            Assert.False(GearTier.CanCarry(new[] { GearTier.Spear, GearTier.ExplosiveSpear, GearTier.ElectricSpear })); // one hand spear, one back spear
+        }
+
+        [Fact]
         public void GearAddDropsTheWeakestItemWhenFull()
         {
-            var inv = new List<string> { GearTier.Rock, GearTier.Spear };
-            Assert.Equal(GearTier.Rock, GearTier.Add(inv, GearTier.ScavengerBomb));
-            Assert.Equal(new[] { GearTier.ScavengerBomb, GearTier.Spear }, inv);
+            var inv = new List<string> { GearTier.Rock, GearTier.Spear, GearTier.ScavengerBomb };
             Assert.Equal(GearTier.Rock, GearTier.Add(inv, GearTier.Rock)); // nothing worth replacing
+            Assert.Equal(GearTier.Rock, GearTier.Add(inv, GearTier.ExplosiveSpear)); // the hands take it, the plain spear goes on the back
+            Assert.Equal(new[] { GearTier.ExplosiveSpear, GearTier.Spear, GearTier.ScavengerBomb }, inv);
+            Assert.Equal(3, inv.Count);
+
+            // The back only takes spears: with both hands busy a rock has to beat a hand item.
+            inv = new List<string> { GearTier.Rock, GearTier.ScavengerBomb };
+            Assert.Equal(GearTier.Rock, GearTier.Add(inv, GearTier.Rock));
             Assert.Equal(2, inv.Count);
+
+            // Three spears cannot all be carried: the weakest goes.
+            inv = new List<string> { GearTier.Spear, GearTier.ElectricSpear };
+            Assert.Equal(GearTier.Spear, GearTier.Add(inv, GearTier.ExplosiveSpear));
+            Assert.Equal(new[] { GearTier.ExplosiveSpear, GearTier.ElectricSpear }, inv);
+        }
+
+        [Fact]
+        public void GearTrimsToWhatTheBodyCanCarryBestFirst()
+        {
+            var kept = GearTier.TrimToCarryable(new[] { GearTier.Rock, GearTier.Spear, GearTier.Rock, GearTier.ScavengerBomb, GearTier.ExplosiveSpear });
+            Assert.Equal(new[] { GearTier.ScavengerBomb, GearTier.ExplosiveSpear, GearTier.Spear }, kept);
+            Assert.Empty(GearTier.TrimToCarryable(null));
+        }
+
+        [Fact]
+        public void TheWeakestSpearRidesOnTheBackOnlyWhenTheHandsAreShort()
+        {
+            Assert.Equal(-1, GearTier.BackSpearIndex(new[] { GearTier.Spear, GearTier.Rock }));
+            Assert.Equal(-1, GearTier.BackSpearIndex(new[] { GearTier.Rock, GearTier.ScavengerBomb }));
+            Assert.Equal(0, GearTier.BackSpearIndex(new[] { GearTier.Spear, GearTier.ExplosiveSpear }));
+            Assert.Equal(2, GearTier.BackSpearIndex(new[] { GearTier.ExplosiveSpear, GearTier.ScavengerBomb, GearTier.Spear }));
+            Assert.Equal(1, GearTier.BackSpearIndex(new[] { GearTier.Rock, GearTier.Spear, GearTier.ScavengerBomb }));
         }
     }
 }

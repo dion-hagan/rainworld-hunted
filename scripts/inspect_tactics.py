@@ -4,7 +4,7 @@ Usage: python scripts/inspect_tactics.py [path-to-dion_hunted_tactics_*.txt]
 """
 import math, sys, glob, os
 
-TACTICS = ["Throw", "Reposition", "CloseIn", "Wait"]
+TACTICS = ["Throw", "Reposition", "CloseIn", "Wait", "Slide", "Pounce", "SlidePounce", "Roll", "Backflip", "FlipThrow"]
 GAME = r"C:\Program Files (x86)\Steam\steamapps\common\Rain World\RainWorld_Data\StreamingAssets\ModConfigs"
 
 def load(path):
@@ -25,13 +25,13 @@ def forward(net, x):
     hid = [math.tanh(b1[h] + sum(w1[i * n_hid + h] * x[i] for i in range(n_in))) for h in range(n_hid)]
     return [b2[o] + sum(w2[h * n_out + o] * hid[h] for h in range(n_hid)) for o in range(n_out)]
 
-def situation(dx, dy, los=1, since=0, armed=1, moving=0.3, held=1/3, threat=0.2, good=None, bomb=0):
+def situation(dx, dy, los=1, since=0, armed=1, moving=0.3, held=1/3, threat=0.2, good=None, bomb=0, ground=1, incoming=0):
     dist = math.hypot(dx, dy)
     if good is None:
         d = dy / dist if dist else 0
         good = 1.0 if (-0.2 <= d <= 0.05 and dist <= 520 and los) else 0.0
     return [max(-1, min(1, dx / 400)), max(-1, min(1, dy / 400)), min(1, dist / 400), los, min(1, since / 400),
-            1.0 if dy > 20 else 0.0, armed, moving, held, threat, good, bomb]
+            1.0 if dy > 20 else 0.0, armed, moving, held, threat, good, bomb, ground, incoming, 1.0 if dy < -20 else 0.0]
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else sorted(glob.glob(os.path.join(GAME, "dion_hunted_tactics_*.txt")), key=os.path.getmtime)[-1]
@@ -52,12 +52,15 @@ def main():
         ("player level, 200 px, no line of sight", situation(-200, 0, los=0, since=100)),
         ("player level 200 px, high threat", situation(-200, 0, threat=0.8)),
         ("player charging (fast), 100 px", situation(-100, 0, moving=1.0)),
+        ("player level 300 px, spear incoming", situation(-300, 0, incoming=1)),
+        ("player straight below, 120 px", situation(-20, -120)),
+        ("player level 200 px, I am in the air", situation(-200, 0, ground=0)),
     ]
-    print("%-42s %8s %10s %8s %8s   pick" % ("situation", *TACTICS))
+    print("%-42s " % "situation" + " ".join("%11s" % t for t in TACTICS) + "   pick")
     for name, x in rows:
         s = forward(net, x)
-        best = max(range(4), key=lambda i: s[i])
-        print("%-42s %8.2f %10.2f %8.2f %8.2f   %s" % (name, s[0], s[1], s[2], s[3], TACTICS[best]))
+        best = max(range(len(TACTICS)), key=lambda i: s[i])
+        print("%-42s " % name + " ".join("%11.2f" % v for v in s) + "   " + TACTICS[best])
     print()
     spread = max(abs(v) for _, x in rows for v in forward(net, x))
     print("largest estimate magnitude %.2f (a fresh, untrained net stays within about 0.3)" % spread)

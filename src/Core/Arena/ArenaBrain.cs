@@ -52,6 +52,9 @@ namespace Hunted.Core.Arena
         /// <summary>The tracker's TicksSinceSeen: ticks since the last sighting minus the 100 it keeps contact for, never below zero.</summary>
         public int TicksSinceSeen => Math.Max(0, contactTicks - SeeAroundCornersTicks);
 
+        /// <summary>How far away a weapon flying at the body counts as incoming (ten ticks of flight).</summary>
+        public const float IncomingRangePx = 400f;
+
         private readonly Random rng;
         private readonly float[] situation = new float[TacticFeatures.Count];
         private readonly List<Vec2> previousAttackPositions = new List<Vec2>();
@@ -64,6 +67,11 @@ namespace Hunted.Core.Arena
         private Vec2 attackPos;
         private bool hasAttackPos;
         private int attackPosAge;
+        /// <summary>The tactic the body is actually running: a move that could not start falls back to Throw for the hold.</summary>
+        private Tactic effective = Tactic.Throw;
+        private bool moveRan;
+        private bool incomingLastTick;
+        private int flipThrowY;
 
         public ArenaBrain(Fighter me, Fighter them, TacticPolicy policy, bool isOpponent, Random rng)
         {
@@ -81,6 +89,10 @@ namespace Hunted.Core.Arena
         {
             CurrentMode = Mode.Travel;
             Tactic = Tactic.Throw;
+            effective = Tactic.Throw;
+            moveRan = false;
+            incomingLastTick = false;
+            flipThrowY = 0;
             // In the game the Pursuer arrives with a fix on the player in its room (Sense gives one
             // when the tracker has no representation yet), so the encounter opens with contact.
             Seen = true;
@@ -171,6 +183,17 @@ namespace Hunted.Core.Arena
             // the foot of the pole, and the climb would be seen halfway up regardless.
             Me.HoldClimbs = IsOpponent && match.Config.OpponentAvoidsExposure && Them.Held != WeaponKind.None && Them.Stun == 0
                 && Math.Abs(Them.Pos.X - Me.Pos.X) <= ThrowRangePx && Them.Pos.Y > Me.Pos.Y + 12f;
+            if (Me.Move != MoveKind.None)
+            {
+                // The body is running a move: no steering, and no throw except the flip throw's own.
+                Me.ClearInputs();
+                if (Me.Move == MoveKind.FlipThrow && Me.FlipTick == Fighter.FlipThrowTick && Me.CanThrow)
+                {
+                    Policy?.NoteThrow();
+                    return flipThrowY != 0 ? Me.ThrowVertical(flipThrowY) : Me.Throw(Them.Pos.X >= Me.Pos.X ? 1 : -1);
+                }
+                return null;
+            }
             Me.Steer(room, target);
 
             Projectile thrown = null;
@@ -211,8 +234,12 @@ namespace Hunted.Core.Arena
                 return item != null ? item.Pos : lastSeen;
             }
             ChooseTactic(match, held);
+            if (Me.Move != MoveKind.None)
+            {
+                return Me.Pos; // busy with a move; Think does not steer
+            }
             Vec2 coord;
-            switch (Tactic)
+            switch (effective)
             {
                 case Tactic.CloseIn:
                     coord = lastSeen;
@@ -225,7 +252,7 @@ namespace Hunted.Core.Arena
                     coord = attackPos;
                     break;
             }
-            if (Tactic != Tactic.Reposition && Tactic != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && GoodAttackPos(match.Room))
+            if (effective != Tactic.Reposition && effective != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && GoodAttackPos(match.Room))
             {
                 throwAtTarget = Them.Pos.X >= Me.Pos.X ? 1 : -1;
                 Policy?.NoteThrow();
@@ -254,13 +281,25 @@ namespace Hunted.Core.Arena
         }
 
         /// <summary>
-        /// Every <see cref="TacticHoldTicks"/>, asks the policy which tactic fits the situation.
-        /// The twelve features are built exactly as <c>PursuerAI.ChooseTactic</c> builds them;
-        /// threat and bomb are always zero here because the arena has no predators and no bombs.
+        /// Every <see cref="TacticHoldTicks"/>, asks the policy which tactic fits the situation;
+        /// also the tick a weapon starts flying at the body (a throw is a new situation), and
+        /// the tick after a move ends. The features are built exactly as
+        /// <c>PursuerAI.ChooseTactic</c> builds them; threat and bomb are always zero here
+        /// because the arena has no predators and no bombs. A move tactic starts the move if
+        /// the body can (on the ground, nothing in progress) and otherwise runs as Throw for
+        /// the hold, which is what the game does too.
         /// </summary>
         private void ChooseTactic(ArenaMatch match, float held)
         {
-            if (tacticTicks-- > 0)
+            if (Me.Move != MoveKind.None)
+            {
+                return; // mid-move: the decision stands until the body is free again
+            }
+            bool incoming = match.WeaponFlyingAt(Me, IncomingRangePx);
+            bool interrupt = (incoming && !incomingLastTick) || moveRan;
+            incomingLastTick = incoming;
+            moveRan = false;
+            if (!interrupt && tacticTicks-- > 0)
             {
                 return;
             }
@@ -268,6 +307,7 @@ namespace Hunted.Core.Arena
             if (Policy == null)
             {
                 Tactic = Tactic.Throw;
+                effective = Tactic.Throw;
                 return;
             }
             Vec2 offset = Them.Pos - Me.Pos;
@@ -284,8 +324,12 @@ namespace Hunted.Core.Arena
             situation[i++] = 0f;
             situation[i++] = GoodAttackPos(match.Room) ? 1f : 0f;
             situation[i++] = 0f;
+            situation[i++] = Me.CanStartMove ? 1f : 0f;
+            situation[i++] = incoming ? 1f : 0f;
+            situation[i++] = offset.Y < -20f ? 1f : 0f;
             Tactic = Policy.Choose(situation, match.Tick);
             match.CountDecision();
+            effective = Tactic;
             if (Tactic == Tactic.Reposition)
             {
                 // Give up the current spot: it goes on the penalty list and a fresh one is picked at once.
@@ -295,6 +339,46 @@ namespace Hunted.Core.Arena
                 }
                 attackPosAge = AttackPositionMaxAge;
             }
+            else if (Tactics.IsMove(Tactic))
+            {
+                if (StartMove(Tactic, offset))
+                {
+                    moveRan = true;
+                    throwAtTarget = 0;
+                    turnDelay = 0;
+                }
+                else
+                {
+                    effective = Tactic.Throw;
+                }
+            }
+        }
+
+        /// <summary>Starts the body's stand-in for the move, toward the target; a flip throw picks up, down or level from where the target is.</summary>
+        private bool StartMove(Tactic tactic, Vec2 offset)
+        {
+            int dir = offset.X >= 0f ? 1 : -1;
+            MoveKind kind;
+            switch (tactic)
+            {
+                case Tactic.Slide: kind = MoveKind.Slide; break;
+                case Tactic.Pounce: kind = MoveKind.Pounce; break;
+                case Tactic.SlidePounce: kind = MoveKind.SlidePounce; break;
+                case Tactic.Roll: kind = MoveKind.Roll; break;
+                case Tactic.Backflip: kind = MoveKind.Backflip; break;
+                case Tactic.FlipThrow: kind = MoveKind.FlipThrow; break;
+                default: return false;
+            }
+            if (kind == MoveKind.FlipThrow)
+            {
+                if (Me.Held == WeaponKind.None)
+                {
+                    return false;
+                }
+                // Straight up or down only when the target is nearly in the column (a vertical throw does not steer).
+                flipThrowY = Math.Abs(offset.X) <= 60f && offset.Y < -40f ? -1 : Math.Abs(offset.X) <= 60f && offset.Y > 40f ? 1 : 0;
+            }
+            return Me.StartMove(kind, dir);
         }
 
         /// <summary>

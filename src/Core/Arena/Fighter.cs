@@ -2,6 +2,24 @@ using System;
 
 namespace Hunted.Core.Arena
 {
+    /// <summary>The scripted moves a fighter can run, the arena's stand-ins for the slugcat's movement tech.</summary>
+    public enum MoveKind
+    {
+        None,
+        /// <summary>Crouch, then a belly slide: 15 ticks flat on the ground, about six tiles.</summary>
+        Slide,
+        /// <summary>Crawl a few ticks, hold the jump for 20 while flat, then leap: eight tiles or so in the air.</summary>
+        Pounce,
+        /// <summary>Crouch, a 12-tick slide, then the leap out of it: another eight tiles or so in the air.</summary>
+        SlidePounce,
+        /// <summary>A pounce that rolls on landing: 20 more ticks low and fast.</summary>
+        Roll,
+        /// <summary>A 12-tick run-up, then up and a little back; airborne for about 20 ticks.</summary>
+        Backflip,
+        /// <summary>A backflip during which the brain throws at <see cref="Fighter.FlipThrowTick"/>.</summary>
+        FlipThrow,
+    }
+
     /// <summary>
     /// A slugcat-shaped body in the arena: a point with a radius that walks, jumps,
     /// climbs poles, takes damage and holds one weapon. The numbers are close to the
@@ -47,14 +65,31 @@ namespace Hunted.Core.Arena
         /// <summary>Set by the brain: do not start a climb or a jump this tick (someone armed is watching); hold at the foot instead.</summary>
         public bool HoldClimbs;
 
+        // A scripted move in progress (see StartMove): the body runs it to the end and ignores steering meanwhile.
+        public MoveKind Move;
+        /// <summary>Ticks since the move started.</summary>
+        public int MoveTick;
+        /// <summary>The move's direction along x.</summary>
+        public int MoveDir;
+        /// <summary>Ticks into the flip part of a backflip (0 before it leaves the ground); the brain throws at <see cref="FlipThrowTick"/>.</summary>
+        public int FlipTick;
+        /// <summary>True while the body is flat on the ground (sliding, rolling): a level throw at chest height passes over it.</summary>
+        public bool Low;
+        /// <summary>Ticks of slowed walking after a belly slide (the game's slowMovementStun).</summary>
+        public int Recover;
+        private int phase;
+        private int phaseTick;
+        private int runTicks;
+
         public Fighter(string name)
         {
             Name = name;
         }
 
         public bool Dead => Health <= 0f;
-        public Vec2 Eye => new Vec2(Pos.X, Pos.Y + EyeHeight);
-        public Vec2 MainChunk => new Vec2(Pos.X, Pos.Y + MainChunkHeight);
+        public Vec2 Eye => MainChunk;
+        /// <summary>Flat on the ground both chunks lie at the lower chunk's height, the head a little ahead.</summary>
+        public Vec2 MainChunk => Low ? new Vec2(Pos.X + Facing * 12f, Pos.Y + LowerChunkHeight) : new Vec2(Pos.X, Pos.Y + MainChunkHeight);
         public Vec2 LowerChunk => new Vec2(Pos.X, Pos.Y + LowerChunkHeight);
 
         public void Reset(Vec2 pos, Surface ground, WeaponKind held)
@@ -68,7 +103,289 @@ namespace Hunted.Core.Arena
             Held = held;
             ThrowCooldown = 0;
             HoldClimbs = false;
+            Move = MoveKind.None;
+            MoveTick = 0;
+            FlipTick = 0;
+            Low = false;
+            Recover = 0;
+            runTicks = 0;
             ClearInputs();
+        }
+
+        // ------------------------------------------------------------------ scripted moves
+
+        /// <summary>Ticks a belly slide's crouch takes before the body launches (face the direction, hold down until it is on all fours).</summary>
+        public const int CrouchTicks = 8;
+        /// <summary>A belly slide lasts this long (the game ends it at rollCounter 15).</summary>
+        public const int SlideTicks = 15;
+        /// <summary>The slide tick a pounce leaves from (the game's window is rollCounter 12 to 15).</summary>
+        public const int PounceTick = 12;
+        /// <summary>A landing roll lasts this long (the game's roll ends after rollCounter 15 once the diagonal is released, 30 at most).</summary>
+        public const int RollTicks = 20;
+        /// <summary>A backflip needs this much running first (the game's initSlideCounter must pass 10).</summary>
+        public const int RunUpTicks = 12;
+        /// <summary>The tick of the flip at which a flip throw leaves the hand (near the top of the arc).</summary>
+        public const int FlipThrowTick = 5;
+        /// <summary>Speed the pounce leaves the slide with (the game's RocketJump from a belly slide: 9 along, 8.5 up).</summary>
+        public const float PounceSpeedX = 9f;
+        public const float PounceSpeedY = 8.5f;
+        /// <summary>The charged pounce: a few ticks of crawling toward the target, then the jump button held this long (the game's superLaunchJump reaching 20).</summary>
+        public const int CrawlTicks = 4;
+        public const int ChargeTicks = 20;
+        public const float CrawlSpeed = 2f;
+        /// <summary>The charged pounce's launch (the game adds 9 along and 3 to 4 up plus a held jump boost: about eight tiles).</summary>
+        public const float ChargedSpeedX = 9f;
+        public const float ChargedSpeedY = 8f;
+        /// <summary>The flip's launch: 9 up, and the reversal leaves about 2 px per tick backward.</summary>
+        public const float FlipSpeedX = 2f;
+        public const float FlipSpeedY = 9f;
+        public const float RollSpeed = 7f;
+        public const int RecoverTicks = 20;
+
+        /// <summary>True when a move can start this tick: on the ground, standing, nothing else in progress.</summary>
+        public bool CanStartMove => Ground != null && OnPole == null && Move == MoveKind.None && Stun == 0 && !Dead;
+
+        /// <summary>
+        /// Starts a scripted move in <paramref name="direction"/> (-1 or 1). The body then runs
+        /// the sequence on its own: crouch and slide (and pounce, and roll), or run up and flip.
+        /// Returns false when it cannot start now.
+        /// </summary>
+        public bool StartMove(MoveKind kind, int direction)
+        {
+            if (kind == MoveKind.None || !CanStartMove)
+            {
+                return false;
+            }
+            Move = kind;
+            MoveDir = direction >= 0 ? 1 : -1;
+            Facing = MoveDir;
+            MoveTick = 0;
+            FlipTick = 0;
+            phase = 0;
+            phaseTick = 0;
+            // A body already running this way skips the run-up, as the game does (initSlideCounter carries over).
+            if ((kind == MoveKind.Backflip || kind == MoveKind.FlipThrow) && runTicks > 10 && Facing == MoveDir)
+            {
+                phaseTick = RunUpTicks - 1;
+            }
+            ClearInputs();
+            return true;
+        }
+
+        private void EndMove()
+        {
+            Move = MoveKind.None;
+            Low = false;
+            FlipTick = 0;
+        }
+
+        /// <summary>One tick of the move in progress. Steering is ignored while it runs.</summary>
+        private void StepMove(ArenaRoom room)
+        {
+            MoveTick++;
+            phaseTick++;
+            switch (Move)
+            {
+                case MoveKind.Slide:
+                case MoveKind.SlidePounce:
+                case MoveKind.Roll:
+                    StepSlideFamily(room);
+                    break;
+                case MoveKind.Pounce:
+                    StepChargedPounce(room);
+                    break;
+                case MoveKind.Backflip:
+                case MoveKind.FlipThrow:
+                    StepFlipFamily(room);
+                    break;
+            }
+        }
+
+        private void StepSlideFamily(ArenaRoom room)
+        {
+            if (phase == 0)
+            {
+                // Crouching: still, on the ground.
+                if (Ground == null)
+                {
+                    EndMove();
+                    StepAirborne(room);
+                    return;
+                }
+                if (phaseTick >= CrouchTicks)
+                {
+                    phase = 1;
+                    phaseTick = 0;
+                    Low = true;
+                }
+                return;
+            }
+            if (phase == 1)
+            {
+                // Sliding: the game adds 18 px per tick along a half sine over 15 ticks, minus friction.
+                if (Ground == null)
+                {
+                    EndMove();
+                    StepAirborne(room);
+                    return;
+                }
+                int length = Move == MoveKind.Slide ? SlideTicks : PounceTick;
+                float speed = 12f * (float)Math.Sin(Math.PI * (phaseTick - 0.5) / SlideTicks);
+                Vel = new Vec2(MoveDir * speed, 0f);
+                SlideAlongGround(room);
+                if (Ground == null)
+                {
+                    EndMove(); // slid off an edge: just fall
+                    return;
+                }
+                if (phaseTick >= length)
+                {
+                    if (Move == MoveKind.Slide)
+                    {
+                        Recover = RecoverTicks;
+                        EndMove();
+                        return;
+                    }
+                    // Pounce: the RocketJump out of the slide.
+                    phase = 2;
+                    phaseTick = 0;
+                    Low = false;
+                    Ground = null;
+                    Vel = new Vec2(MoveDir * PounceSpeedX, PounceSpeedY);
+                    Pos.Y += 0.5f;
+                }
+                return;
+            }
+            if (phase == 2)
+            {
+                // Airborne out of the slide: no air control, the game keeps the launch speed.
+                StepAirborne(room);
+                if (Ground != null)
+                {
+                    if (Move == MoveKind.Roll)
+                    {
+                        phase = 3;
+                        phaseTick = 0;
+                        Low = true;
+                    }
+                    else
+                    {
+                        EndMove();
+                    }
+                }
+                return;
+            }
+            // Rolling after the landing, low, until the roll runs out.
+            Vel = new Vec2(MoveDir * RollSpeed, 0f);
+            SlideAlongGround(room);
+            if (Ground == null || phaseTick >= RollTicks)
+            {
+                EndMove();
+            }
+        }
+
+        private void StepChargedPounce(ArenaRoom room)
+        {
+            if (phase == 0)
+            {
+                // Crawling toward the target so the head leads, flat.
+                if (Ground == null)
+                {
+                    EndMove();
+                    StepAirborne(room);
+                    return;
+                }
+                Low = true;
+                Vel = new Vec2(MoveDir * CrawlSpeed, 0f);
+                SlideAlongGround(room);
+                if (Ground == null)
+                {
+                    EndMove();
+                    return;
+                }
+                if (phaseTick >= CrawlTicks)
+                {
+                    phase = 1;
+                    phaseTick = 0;
+                }
+                return;
+            }
+            if (phase == 1)
+            {
+                // Charging: still, flat, the jump held.
+                if (phaseTick >= ChargeTicks)
+                {
+                    phase = 2;
+                    phaseTick = 0;
+                    Low = false;
+                    Ground = null;
+                    Vel = new Vec2(MoveDir * ChargedSpeedX, ChargedSpeedY);
+                    Pos.Y += 0.5f;
+                }
+                return;
+            }
+            StepAirborne(room);
+            if (Ground != null)
+            {
+                EndMove();
+            }
+        }
+
+        private void StepFlipFamily(ArenaRoom room)
+        {
+            if (phase == 0)
+            {
+                // The run-up: walking at full speed toward the target.
+                if (Ground == null)
+                {
+                    EndMove();
+                    StepAirborne(room);
+                    return;
+                }
+                Vel = new Vec2(MoveDir * WalkSpeed, 0f);
+                SlideAlongGround(room);
+                if (Ground == null)
+                {
+                    EndMove(); // ran off an edge
+                    return;
+                }
+                if (phaseTick >= RunUpTicks)
+                {
+                    // The reversal and the jump: up, and a little back the way it came.
+                    phase = 1;
+                    phaseTick = 0;
+                    Ground = null;
+                    Vel = new Vec2(-MoveDir * FlipSpeedX, FlipSpeedY);
+                    Pos.Y += 0.5f;
+                }
+                return;
+            }
+            FlipTick++;
+            StepAirborne(room);
+            if (Ground != null)
+            {
+                EndMove();
+            }
+        }
+
+        /// <summary>Moves along the ground by Vel.X, stopping at crates and the room's edges, and drops off the surface's end.</summary>
+        private void SlideAlongGround(ArenaRoom room)
+        {
+            Crate crate = room.CrateAhead(Pos.X, Pos.Y, Vel.X);
+            if (crate != null)
+            {
+                Pos.X = Vel.X > 0f ? crate.X0 - 0.5f : crate.X1 + 0.5f;
+                Vel.X = 0f;
+            }
+            else
+            {
+                Pos.X += Vel.X;
+            }
+            ClampX(room);
+            if (!Ground.Spans(Pos.X))
+            {
+                Ground = null;
+            }
         }
 
         /// <summary>Clears the movement inputs (not <see cref="HoldClimbs"/>, which the brain sets before steering).</summary>
@@ -206,10 +523,24 @@ namespace Hunted.Core.Arena
             {
                 Stun--;
                 ClearInputs();
+                if (Move != MoveKind.None)
+                {
+                    EndMove(); // a hit ends whatever the body was doing
+                }
             }
             if (ThrowCooldown > 0)
             {
                 ThrowCooldown--;
+            }
+            if (Recover > 0)
+            {
+                Recover--;
+            }
+            if (Move != MoveKind.None)
+            {
+                StepMove(room);
+                ClearInputs();
+                return;
             }
             if (MoveX != 0)
             {
@@ -283,7 +614,9 @@ namespace Hunted.Core.Arena
 
         private void StepOnGround(ArenaRoom room)
         {
-            Vel = new Vec2(MoveX * WalkSpeed, 0f);
+            // Consecutive ticks of running one way, for the backflip's run-up.
+            runTicks = MoveX != 0 && MoveX == Facing ? runTicks + 1 : 0;
+            Vel = new Vec2(MoveX * (Recover > 0 ? WalkSpeed * 0.5f : WalkSpeed), 0f);
             Crate crate = room.CrateAhead(Pos.X, Pos.Y, Vel.X);
             if (crate != null)
             {
@@ -309,7 +642,10 @@ namespace Hunted.Core.Arena
 
         private void StepAirborne(ArenaRoom room)
         {
-            Vel.X = MoveX != 0 ? MoveX * WalkSpeed : Vel.X * 0.9f;
+            if (Move == MoveKind.None)
+            {
+                Vel.X = MoveX != 0 ? MoveX * WalkSpeed : Vel.X * 0.9f;
+            }
             Vel.Y -= Gravity;
             Vec2 prev = Pos;
             Pos += Vel;
@@ -379,10 +715,20 @@ namespace Hunted.Core.Arena
         /// <summary>Lets go of the held weapon as a projectile flying level from the main chunk in <paramref name="direction"/> (-1 or 1).</summary>
         public Projectile Throw(int direction)
         {
-            var p = new Projectile(Held, this, new Vec2(Pos.X + direction * (Radius + 4f), Pos.Y + MainChunkHeight), new Vec2(direction * Projectile.Speed, 0f));
+            var p = new Projectile(Held, this, new Vec2(Pos.X + direction * (Radius + 4f), MainChunk.Y), new Vec2(direction * Projectile.Speed, 0f));
             Held = WeaponKind.None;
             ThrowCooldown = 10;
             Facing = direction;
+            return p;
+        }
+
+        /// <summary>Lets go of the held weapon straight up or down (<paramref name="directionY"/> 1 or -1), as a flip throw does; a down throw goes through platforms.</summary>
+        public Projectile ThrowVertical(int directionY)
+        {
+            int dy = directionY >= 0 ? 1 : -1;
+            var p = new Projectile(Held, this, new Vec2(Pos.X, MainChunk.Y + dy * (Radius + 4f)), new Vec2(0f, dy * Projectile.Speed), throughPlatforms: true);
+            Held = WeaponKind.None;
+            ThrowCooldown = 10;
             return p;
         }
 

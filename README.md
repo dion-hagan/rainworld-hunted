@@ -12,8 +12,11 @@ Two bodies are implemented (see the [design](docs/design.md)):
   slugcat body grown to an adult with Hunter's stats, driven by the mod's own AI: the
   slugpup movement layer (poles, pipes, jumps, wall climbs) under a hunting decision
   layer that closes in, takes a throwing position, throws when lined up, picks up
-  better weapons, flees predators it cannot fight and hides from the rain. While armed
-  and engaging it picks a tactic (throw, reposition, close in, wait) with a tiny
+  better weapons, flees predators it cannot fight and hides from the rain. It carries
+  gear like Hunter (a spear in one hand, a rock or bomb in the other, a spare spear on
+  its back) and pulls spears out of walls like Artificer. While armed
+  and engaging it picks a tactic (throw, reposition, close in, wait, or one of six moves:
+  slide, pounce, slide pounce, roll, backflip, flip throw) with a tiny
   in-process neural net that learns from hits, misses and injuries, so it adapts to how
   you fight over the campaign (see [docs/testing.md](docs/testing.md); off by option).
 - **Stage 1: an elite scavenger** driven by the game's own scavenger AI with a permanent

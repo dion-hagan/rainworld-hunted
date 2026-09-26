@@ -777,7 +777,7 @@ namespace Hunted.Game
             }
         }
 
-        /// <summary>F8: nothing, rock, spear, explosive spear, bomb (plus a spear for the scavenger body), nothing...</summary>
+        /// <summary>F8: nothing, rock, spear, explosive spear, spear + bomb, the full Hunter loadout (explosive spear, bomb, spear on the back), nothing...</summary>
         public void TestCycleGear()
         {
             PursuerBody body = PursuerBodies.Selected();
@@ -787,13 +787,17 @@ namespace Hunted.Game
             {
                 next = new List<string> { GearTier.Rock };
             }
-            else if (current.Contains(GearTier.ScavengerBomb))
+            else if (current.Contains(GearTier.ScavengerBomb) && current.Contains(GearTier.ExplosiveSpear))
             {
                 next = new List<string>();
             }
+            else if (current.Contains(GearTier.ScavengerBomb))
+            {
+                next = new List<string> { GearTier.ExplosiveSpear, GearTier.ScavengerBomb, GearTier.Spear };
+            }
             else if (current.Contains(GearTier.ExplosiveSpear))
             {
-                next = body == PursuerBody.Slugcat ? new List<string> { GearTier.ScavengerBomb } : new List<string> { GearTier.Spear, GearTier.ScavengerBomb };
+                next = new List<string> { GearTier.Spear, GearTier.ScavengerBomb };
             }
             else if (current.Contains(GearTier.Spear))
             {

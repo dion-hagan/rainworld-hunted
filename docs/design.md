@@ -118,7 +118,7 @@ Spawns with nothing. Gear tiers, weakest to strongest:
 
 **Onscreen acquisition:** item-seeking is a behavior mode (§7.2). The Pursuer picks up anything better than what it holds, and will detour to kill scavengers carrying higher-tier gear if it can win the fight (compare its loadout vs. the scavenger's; avoid scavenger packs).
 
-**Offscreen acquisition:** each cycle, roll per region traversed. Regions with high scavenger density (e.g., Outskirts toll areas, Garbage Wastes) give better odds of rock→spear and spear→explosive upgrades. Inventory is stored in save data (up to 2 held items, matching slugcat hands).
+**Offscreen acquisition:** each cycle, roll per region traversed. Regions with high scavenger density (e.g., Outskirts toll areas, Garbage Wastes) give better odds of rock→spear and spear→explosive upgrades. Inventory is stored in save data (up to 3 items: two hands plus one spear on the back, matching Hunter; only one hand can hold a spear).
 
 ### 6.4 Death & persistence
 
@@ -176,7 +176,9 @@ Only worth building if Stage 2 feels too predictable after playtesting. If so, t
 - The Stage 2 AI stays as the fallback if weights fail to load or the policy gets stuck.
 
 > **Implementation note (v0.2):** what shipped as "Stage 3" is smaller than this: a
-> contextual bandit over four Engage tactics (see `docs/testing.md`), trained online.
+> contextual bandit over ten Engage tactics (see `docs/testing.md`), trained online: four
+> steering rules and six scripted moves (slide, pounce, slide pounce, roll, backflip, flip
+> throw), so the learning is *when* to use the slugcat's movement tech, not *how*.
 > The arena-mode training harness exists as a headless simulator (`docs/arena.md`):
 > the bandit against the Stage 2 rules in a simplified room, many instances in parallel,
 > producing a baseline tactics file the mod loads as the prior for a fresh slot.

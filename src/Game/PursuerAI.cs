@@ -64,6 +64,11 @@ namespace Hunted.Game
         // Decision layer state.
         private Tracker.CreatureRepresentation target;
         private PhysicalObject wantedItem;
+        private int wantedScanCooldown;
+        /// <summary>Armed and engaging, a spear or bomb this close is worth a detour.</summary>
+        private const float ArmedDetourPx = 250f;
+        /// <summary>Returned by <see cref="MakeRoomFor"/>: the item goes straight onto the back.</summary>
+        private const int ToBack = -2;
         private WorldCoordinate attackPos;
         private WorldCoordinate testThrowPos;
         private int changeAttackPositionDelay;
@@ -73,8 +78,18 @@ namespace Hunted.Game
 
         // Learned tactics: one decision per TacticHoldTicks while armed and engaging.
         private const int TacticHoldTicks = 20;
+        /// <summary>A weapon flying at the body from closer than this counts as incoming (ten ticks of flight).</summary>
+        private const float IncomingRangePx = 400f;
+        /// <summary>How long to hold up and toward a ledge before falling back to the slugpup rule (a jump).</summary>
+        private const int LedgeClimbTicks = 40;
         private Tactic tactic = Tactic.Throw;
+        /// <summary>The tactic the body runs: a move that could not start runs as Throw for the hold.</summary>
+        private Tactic effectiveTactic = Tactic.Throw;
         private int tacticTicks;
+        private readonly PursuerMoves moves = new PursuerMoves();
+        private bool incomingLastTick;
+        private int ledgeTicks;
+        private int techLogCooldown;
         private readonly float[] situation = new float[PursuerLearner.FeatureCount];
         private readonly List<IntVector2> previousAttackPositions = new List<IntVector2>();
         private readonly List<IntVector2> targetArea = new List<IntVector2>(50);
@@ -109,6 +124,14 @@ namespace Hunted.Game
                 if (mode == Mode.Engage)
                 {
                     s += "/" + tactic;
+                    if (moves.Active)
+                    {
+                        s += " (" + PursuerMoves.Name(moves.Running.Value) + ")";
+                    }
+                    else if (effectiveTactic != tactic)
+                    {
+                        s += " (as " + effectiveTactic + ")";
+                    }
                     PursuerLearner learner = HuntedSession.Current?.Learner;
                     if (learner != null && learner.Enabled && Options.Instance != null && Options.Instance.DebugHotkeys.Value)
                     {
@@ -132,6 +155,8 @@ namespace Hunted.Game
             wantedItem = null;
             throwAtTarget = 0;
             jumping = false;
+            moves.Cancel();
+            ledgeTicks = 0;
         }
 
         // ------------------------------------------------------------------ per tick
@@ -233,6 +258,10 @@ namespace Hunted.Game
             {
                 fleeHold--;
             }
+            if (techLogCooldown > 0)
+            {
+                techLogCooldown--;
+            }
 
             HuntedSession session = HuntedSession.Current;
             World world = creature.world;
@@ -242,8 +271,10 @@ namespace Hunted.Game
 
             bool rainSoon = world.rainCycle != null && !creature.ignoreCycle && world.rainCycle.TimeUntilRain < RainHideTicks;
             float threat = threatTracker.Utility();
+            BackSpearUpdate();
             float held = BestHeldWeaponValue();
             bool lethal = held >= 1f;
+            bool wantsWeapon = WantsBetterWeapon(held);
 
             if (rainSoon)
             {
@@ -261,7 +292,7 @@ namespace Hunted.Game
             {
                 mode = Mode.Engage;
             }
-            else if (WantsBetterWeapon(held))
+            else if (wantsWeapon)
             {
                 mode = Mode.Scavenge;
             }
@@ -291,7 +322,7 @@ namespace Hunted.Game
                     coord = EngageUpdate(held);
                     break;
                 case Mode.Scavenge:
-                    coord = wantedItem != null ? wantedItem.abstractPhysicalObject.pos : creature.pos;
+                    coord = wantedItem != null ? ItemCoordinate(wantedItem) ?? creature.pos : creature.pos;
                     break;
                 case Mode.Search:
                     coord = target.BestGuessForPosition();
@@ -303,7 +334,7 @@ namespace Hunted.Game
             coord = KeepOutOfShelters(coord, session, world);
             creature.abstractAI.SetDestination(coord);
 
-            GrabUpdate(held);
+            GrabUpdate();
             Move();
         }
 
@@ -386,10 +417,7 @@ namespace Hunted.Game
             }
             if (obj is Spear spear)
             {
-                if (spear.mode == Weapon.Mode.StuckInWall)
-                {
-                    return 0f;
-                }
+                // A spear stuck in a wall counts: the Pursuer pulls those out like Artificer.
                 var abstractSpear = spear.abstractPhysicalObject as AbstractSpear;
                 if (abstractSpear != null && abstractSpear.explosive)
                 {
@@ -440,6 +468,7 @@ namespace Hunted.Game
             return best;
         }
 
+        /// <summary>In a hand or on the back.</summary>
         private bool HoldingThis(PhysicalObject obj)
         {
             for (int i = 0; i < cat.grasps.Length; i++)
@@ -449,16 +478,208 @@ namespace Hunted.Game
                     return true;
                 }
             }
-            return false;
+            return cat.spearOnBack != null && cat.spearOnBack.spear == obj;
+        }
+
+        private static bool StuckInWall(PhysicalObject obj)
+        {
+            return obj is Spear spear && spear.mode == Weapon.Mode.StuckInWall;
         }
 
         private bool CanGrabItem(PhysicalObject obj)
         {
-            return obj != null && cat.CanIPickThisUp(obj) && cat.NPCGrabCheck(obj);
+            if (obj == null || !cat.CanIPickThisUp(obj))
+            {
+                return false;
+            }
+            if (StuckInWall(obj))
+            {
+                // The game's reach test wants a line of sight to the item, which a wall never gives: any chunk close counts.
+                for (int i = 0; i < cat.bodyChunks.Length; i++)
+                {
+                    if (Custom.DistLess(cat.bodyChunks[i].pos, obj.firstChunk.pos, 30f))
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return cat.NPCGrabCheck(obj);
         }
 
-        /// <summary>Best reachable weapon lying around this room that beats what is in hand.</summary>
-        private PhysicalObject NearestBetterWeapon(float held)
+        // ------------------------------------------------------------------ hands and back (Hunter's loadout)
+
+        /// <summary>The hand that holds a spear, or -1. A slugcat holds one spear in its hands; the other goes on the back.</summary>
+        private int HandSpearIndex()
+        {
+            for (int i = 0; i < cat.grasps.Length; i++)
+            {
+                if (cat.grasps[i] != null && cat.grasps[i].grabbed is Spear)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>A hand that could take <paramref name="obj"/> as things stand, or -1.</summary>
+        private int FreeHandFor(PhysicalObject obj)
+        {
+            if (obj is Spear && HandSpearIndex() >= 0)
+            {
+                return -1;
+            }
+            for (int i = 0; i < cat.grasps.Length; i++)
+            {
+                if (cat.grasps[i] == null)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>The weakest hand item that <paramref name="obj"/> is worth dropping for, or -1.</summary>
+        private int HandToRelease(PhysicalObject obj)
+        {
+            int worst = -1;
+            for (int i = 0; i < cat.grasps.Length; i++)
+            {
+                if (cat.grasps[i] == null)
+                {
+                    continue;
+                }
+                int other = 1 - i;
+                if (obj is Spear && cat.grasps[other] != null && cat.grasps[other].grabbed is Spear)
+                {
+                    continue; // would leave a spear in each hand
+                }
+                if (worst == -1 || WeaponValue(cat.grasps[i].grabbed) < WeaponValue(cat.grasps[worst].grabbed))
+                {
+                    worst = i;
+                }
+            }
+            return worst != -1 && WeaponValue(cat.grasps[worst].grabbed) < WeaponValue(obj) ? worst : -1;
+        }
+
+        /// <summary>True when there is a place for <paramref name="obj"/>: a free hand, the back (for a spear, or by stowing a hand spear), or a weaker hand item to drop.</summary>
+        private bool WouldTake(PhysicalObject obj)
+        {
+            if (FreeHandFor(obj) >= 0)
+            {
+                return true;
+            }
+            if (cat.CanPutSpearToBack && (obj is Spear || HandSpearIndex() >= 0))
+            {
+                return true;
+            }
+            return HandToRelease(obj) >= 0;
+        }
+
+        /// <summary>
+        /// Frees a place for <paramref name="obj"/> and returns the hand to grab it with,
+        /// <see cref="ToBack"/> when it goes straight onto the back, or -1 when nothing is worth making room for.
+        /// </summary>
+        private int MakeRoomFor(PhysicalObject obj)
+        {
+            int hand = FreeHandFor(obj);
+            if (hand >= 0)
+            {
+                return hand;
+            }
+            if (cat.CanPutSpearToBack)
+            {
+                int handSpear = HandSpearIndex();
+                if (handSpear >= 0 && (!(obj is Spear) || WeaponValue(obj) > WeaponValue(cat.grasps[handSpear].grabbed)))
+                {
+                    // The hand spear rides on the back from now on; the hand takes the new item.
+                    Spear stowed = cat.grasps[handSpear].grabbed as Spear;
+                    cat.spearOnBack.SpearToBack(stowed);
+                    HuntedLog.Info("[gear] " + stowed.GetType().Name + " onto the back");
+                    return FreeHandFor(obj);
+                }
+                if (obj is Spear)
+                {
+                    return ToBack;
+                }
+            }
+            int release = HandToRelease(obj);
+            if (release >= 0)
+            {
+                HuntedLog.Info("[gear] dropping " + cat.grasps[release].grabbed.GetType().Name + " for " + obj.GetType().Name);
+                cat.ReleaseGrasp(release);
+                return release;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Hunter's back. A stowed spear survives the body leaving and re-entering rooms as
+        /// an abstract stick that nothing in the game reattaches, so reattach it here; and
+        /// when the hands hold nothing as good as a spear, draw it.
+        /// </summary>
+        private void BackSpearUpdate()
+        {
+            Player.SpearOnBack back = cat.spearOnBack;
+            if (back == null)
+            {
+                return;
+            }
+            for (int i = creature.stuckObjects.Count - 1; i >= 0; i--)
+            {
+                if (!(creature.stuckObjects[i] is Player.AbstractOnBackStick stick) || stick.A != creature || stick.B.realizedObject == null || stick.B.realizedObject == back.spear)
+                {
+                    continue;
+                }
+                if (back.spear == null && stick.B.realizedObject is Spear stowed && stowed.room == cat.room && stowed.grabbedBy.Count == 0 && !stowed.slatedForDeletetion)
+                {
+                    back.spear = stowed;
+                    back.abstractStick = stick;
+                    stowed.ChangeMode(Weapon.Mode.OnBack);
+                    continue;
+                }
+                // The spear this stick names is realized but not on the back (in a hand, or lying somewhere): a stale stick would count it twice in the inventory.
+                stick.Deactivate();
+            }
+            if (back.spear != null && BestHeldWeaponValue() < 1f && cat.CanRetrieveSpearFromBack)
+            {
+                back.SpearToHand(cat.evenUpdate);
+                HuntedLog.Info("[gear] spear from the back");
+            }
+        }
+
+        /// <summary>Where to walk to for an item: its tile, or for a spear stuck in a wall a reachable tile beside it. Null when unreachable.</summary>
+        private WorldCoordinate? ItemCoordinate(PhysicalObject obj)
+        {
+            if (obj is Spear spear && spear.mode == Weapon.Mode.StuckInWall)
+            {
+                IntVector2 tile = cat.room.GetTilePosition(spear.firstChunk.pos);
+                // The tail sticks out of the wall on the side away from the tip; try that side first, then the rest.
+                var sides = new[] { new IntVector2(-Mathf.RoundToInt(spear.rotation.x), -Mathf.RoundToInt(spear.rotation.y)), new IntVector2(-1, 0), new IntVector2(1, 0), new IntVector2(0, -1), new IntVector2(0, 1) };
+                foreach (IntVector2 side in sides)
+                {
+                    if (side.x == 0 && side.y == 0)
+                    {
+                        continue;
+                    }
+                    WorldCoordinate beside = cat.room.GetWorldCoordinate(tile + side);
+                    if (pathFinder.CoordinateReachable(beside))
+                    {
+                        return beside;
+                    }
+                }
+                return null;
+            }
+            WorldCoordinate pos = obj.abstractPhysicalObject.pos;
+            return pathFinder.CoordinateReachable(pos) ? pos : (WorldCoordinate?)null;
+        }
+
+        /// <summary>
+        /// Best reachable weapon lying around this room (or stuck in its walls) that there is
+        /// a place for. Unarmed, anything will do; with a spear or better in hand only spears
+        /// and bombs are worth going for.
+        /// </summary>
+        private PhysicalObject NearestWantedWeapon(float held)
         {
             PhysicalObject best = null;
             float bestScore = 0f;
@@ -466,12 +687,16 @@ namespace Hunted.Game
             {
                 ItemTracker.ItemRepresentation rep = itemTracker.GetRep(i);
                 PhysicalObject obj = rep.representedItem.realizedObject;
-                if (obj == null || obj.room != cat.room || obj.grabbedBy.Count > 0 || HoldingThis(obj))
+                if (obj == null || obj.room != cat.room || obj.grabbedBy.Count > 0 || HoldingThis(obj) || obj.slatedForDeletetion)
+                {
+                    continue;
+                }
+                if (obj is Weapon weapon && (weapon.mode == Weapon.Mode.OnBack || weapon.mode == Weapon.Mode.Thrown))
                 {
                     continue;
                 }
                 float value = WeaponValue(obj);
-                if (value <= held || value <= 0f || !pathFinder.CoordinateReachable(rep.representedItem.pos))
+                if (value <= 0f || (held >= 1f && value < 1f) || !WouldTake(obj) || ItemCoordinate(obj) == null)
                 {
                     continue;
                 }
@@ -488,18 +713,21 @@ namespace Hunted.Game
 
         private bool WantsBetterWeapon(float held)
         {
-            if (held >= 1f)
-            {
-                wantedItem = null;
-                return false;
-            }
-            if (wantedItem != null && (wantedItem.room != cat.room || wantedItem.grabbedBy.Count > 0 || HoldingThis(wantedItem) || wantedItem.slatedForDeletetion))
+            if (wantedItem != null && (wantedItem.room != cat.room || wantedItem.grabbedBy.Count > 0 || HoldingThis(wantedItem) || wantedItem.slatedForDeletetion || !WouldTake(wantedItem)))
             {
                 wantedItem = null;
             }
             if (wantedItem == null)
             {
-                wantedItem = NearestBetterWeapon(held);
+                if (wantedScanCooldown > 0)
+                {
+                    wantedScanCooldown--;
+                }
+                else
+                {
+                    wantedScanCooldown = 10;
+                    wantedItem = NearestWantedWeapon(held);
+                }
             }
             return wantedItem != null;
         }
@@ -515,15 +743,28 @@ namespace Hunted.Game
             if (held < 0.5f)
             {
                 // Unarmed: arm up if anything usable is close, otherwise keep the pressure on.
-                if (WantsBetterWeapon(held) && wantedItem != null && Vector2.Distance(wantedItem.firstChunk.pos, cat.firstChunk.pos) < 600f)
+                if (wantedItem != null && Vector2.Distance(wantedItem.firstChunk.pos, cat.firstChunk.pos) < 600f)
                 {
-                    return wantedItem.abstractPhysicalObject.pos;
+                    return ItemCoordinate(wantedItem) ?? target.BestGuessForPosition();
                 }
                 return target.BestGuessForPosition();
             }
+            if (wantedItem != null && !moves.Active && throwAtTarget == 0 && WeaponValue(wantedItem) >= 1f && Vector2.Distance(wantedItem.firstChunk.pos, cat.firstChunk.pos) < ArmedDetourPx)
+            {
+                // Armed, with a spear or bomb within a few tiles and a place for it: fill the other hand or the back first.
+                WorldCoordinate? beside = ItemCoordinate(wantedItem);
+                if (beside != null)
+                {
+                    return beside.Value;
+                }
+            }
             ChooseTactic(victim, held);
+            if (moves.Active)
+            {
+                return creature.pos; // the body is running a move; Move() feeds it the inputs
+            }
             WorldCoordinate coord;
-            switch (tactic)
+            switch (effectiveTactic)
             {
                 case Tactic.CloseIn:
                     coord = target.BestGuessForPosition();
@@ -536,7 +777,7 @@ namespace Hunted.Game
                     coord = attackPos;
                     break;
             }
-            if (tactic != Tactic.Reposition && tactic != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && victim.room == cat.room)
+            if (effectiveTactic != Tactic.Reposition && effectiveTactic != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && victim.room == cat.room)
             {
                 int chunk = UnityEngine.Random.Range(0, victim.bodyChunks.Length);
                 if (GoodAttackPos(victim.bodyChunks[chunk]))
@@ -575,12 +816,23 @@ namespace Hunted.Game
 
 
         /// <summary>
-        /// Every TacticHoldTicks, asks the learner which tactic fits the situation. With
-        /// learning off (or no session) the Pursuer always throws, which is the old behaviour.
+        /// Every TacticHoldTicks, asks the learner which tactic fits the situation; also the
+        /// tick a weapon starts flying at the body (a throw is a new situation) and the tick
+        /// after a move ends. With learning off (or no session) the Pursuer always throws,
+        /// which is the old behaviour. A move tactic starts the move when the body can
+        /// (<see cref="PursuerMoves.CanStart"/>) and otherwise runs as Throw for the hold.
         /// </summary>
         private void ChooseTactic(Creature victim, float held)
         {
-            if (tacticTicks-- > 0)
+            if (moves.Active)
+            {
+                return; // mid-move: the decision stands until the body is free again
+            }
+            bool incoming = SpearIncoming(victim);
+            bool interrupt = (incoming && !incomingLastTick) || moves.JustEnded;
+            incomingLastTick = incoming;
+            moves.Tick();
+            if (!interrupt && tacticTicks-- > 0)
             {
                 return;
             }
@@ -589,6 +841,7 @@ namespace Hunted.Game
             if (learner == null || !learner.Enabled)
             {
                 tactic = Tactic.Throw;
+                effectiveTactic = Tactic.Throw;
                 return;
             }
             Vector2 me = cat.mainBodyChunk.pos;
@@ -608,11 +861,15 @@ namespace Hunted.Game
             situation[i++] = threatTracker.Utility();
             situation[i++] = GoodAttackPos(victim.mainBodyChunk) ? 1f : 0f;
             situation[i++] = HeldWeapon() is ScavengerBomb ? 1f : 0f;
+            situation[i++] = PursuerMoves.CanStart(cat) ? 1f : 0f;
+            situation[i++] = incoming ? 1f : 0f;
+            situation[i++] = offset.y < -20f ? 1f : 0f;
             Tactic previous = tactic;
             tactic = learner.Choose(situation);
+            effectiveTactic = tactic;
             if (tactic != previous)
             {
-                HuntedLog.Info("[engage] tactic " + previous + " -> " + tactic + " at " + (int)offset.magnitude + " px, dy " + (int)offset.y + ", los " + (target.VisualContact ? "yes" : "no"));
+                HuntedLog.Info("[engage] tactic " + previous + " -> " + tactic + " at " + (int)offset.magnitude + " px, dy " + (int)offset.y + ", los " + (target.VisualContact ? "yes" : "no") + (incoming ? ", spear incoming" : ""));
             }
             if (tactic == Tactic.Reposition)
             {
@@ -623,6 +880,64 @@ namespace Hunted.Game
                 testThrowPos = creature.pos;
                 previousAttackPositions.Insert(Math.Min(1, previousAttackPositions.Count), attackPos.Tile);
             }
+            else if (Tactics.IsMove(tactic))
+            {
+                int dir = offset.x >= 0f ? 1 : -1;
+                int throwY = 0;
+                bool canStart = true;
+                if (tactic == Tactic.FlipThrow)
+                {
+                    canStart = HeldWeapon() != null;
+                    // Straight up or down only when the player is nearly in the column: a vertical throw does not steer.
+                    if (Mathf.Abs(offset.x) <= 60f && offset.y < -40f)
+                    {
+                        throwY = -1;
+                    }
+                    else if (Mathf.Abs(offset.x) <= 60f && offset.y > 40f && PursuerMoves.UpwardThrowsAllowed())
+                    {
+                        throwY = 1;
+                    }
+                }
+                if (canStart && moves.Start(cat, tactic, dir, throwY))
+                {
+                    throwAtTarget = 0;
+                    turnDelay = 0;
+                    jumping = false;
+                }
+                else
+                {
+                    effectiveTactic = Tactic.Throw;
+                }
+            }
+        }
+
+        /// <summary>True when a weapon the target threw is in flight toward the body, close enough to matter.</summary>
+        private bool SpearIncoming(Creature victim)
+        {
+            Room room = cat.room;
+            if (room == null || room.physicalObjects == null)
+            {
+                return false;
+            }
+            Vector2 me = cat.mainBodyChunk.pos;
+            for (int i = 0; i < room.physicalObjects.Length; i++)
+            {
+                List<PhysicalObject> list = room.physicalObjects[i];
+                for (int j = 0; j < list.Count; j++)
+                {
+                    if (!(list[j] is Weapon w) || w.mode != Weapon.Mode.Thrown || w.thrownBy != victim)
+                    {
+                        continue;
+                    }
+                    Vector2 toMe = me - w.firstChunk.pos;
+                    if (toMe.magnitude > IncomingRangePx || Mathf.Abs(toMe.y) > 60f || Vector2.Dot(toMe, w.firstChunk.vel) <= 0f)
+                    {
+                        continue;
+                    }
+                    return true;
+                }
+            }
+            return false;
         }
 
         private void ConsiderThrowingAtThreat()
@@ -779,7 +1094,7 @@ namespace Hunted.Game
             return true;
         }
 
-        private void GrabUpdate(float held)
+        private void GrabUpdate()
         {
             if (wantedItem == null)
             {
@@ -794,12 +1109,21 @@ namespace Hunted.Game
             {
                 return;
             }
-            // Hands full of something worse: drop it for the better weapon.
-            if (cat.grasps[0] != null && WeaponValue(cat.grasps[0].grabbed) < WeaponValue(wantedItem))
+            PhysicalObject item = wantedItem;
+            string what = item.GetType().Name + (StuckInWall(item) ? " (out of the wall)" : "");
+            int hand = MakeRoomFor(item);
+            if (hand == ToBack)
             {
-                cat.ReleaseGrasp(0);
+                cat.spearOnBack.SpearToBack(item as Spear);
+                HuntedLog.Info("[gear] took " + what + " onto the back");
             }
-            cat.NPCForceGrab(wantedItem);
+            else if (hand >= 0)
+            {
+                // Not NPCForceGrab: that fills every free hand with the same object.
+                cat.SlugcatGrab(item, hand);
+                HuntedLog.Info("[gear] took " + what + " in hand " + hand);
+            }
+            wantedItem = null;
         }
 
         // ------------------------------------------------------------------ movement layer (slugpup port)
@@ -807,6 +1131,16 @@ namespace Hunted.Game
         private void Move()
         {
             Player.InputPackage input = default(Player.InputPackage);
+            if (moves.Active)
+            {
+                // A move in progress owns the controller until it ends; the path waits.
+                if (moves.Drive(cat, ref input))
+                {
+                    cat.input[0] = input;
+                    return;
+                }
+                input = default(Player.InputPackage);
+            }
             MovementConnection movementConnection = (pathFinder as StandardPather).FollowPath(creature.pos, true);
             AbstractCreatureAI abstractAI = creature.abstractAI;
             bool atDestination = abstractAI.destination.room == creature.Room.index && (new Vector2(abstractAI.destination.x, abstractAI.destination.y) - new Vector2(creature.pos.x, creature.pos.y)).magnitude < 1.5f;
@@ -814,6 +1148,29 @@ namespace Hunted.Game
             {
                 movementConnection = default(MovementConnection);
                 cat.standing = true;
+            }
+
+            if (cat.animation == Player.AnimationIndex.LedgeGrab && ledgeTicks < LedgeClimbTicks)
+            {
+                // Hanging from a ledge. The slugpup rule jumps here, and Player.Jump turns a jump in a
+                // ledge grab into a wall jump away from it, so an adult body never gets up. A player
+                // holds up and toward the ledge instead; Player pulls the body over (ledgeGrabCounter).
+                // Only when the path leads down do we let go.
+                ledgeTicks++;
+                bool wantsDown = movementConnection != default(MovementConnection) && movementConnection.destinationCoord.y < creature.pos.y;
+                if (ledgeTicks == 1)
+                {
+                    HuntedLog.Info("[move] " + (wantsDown ? "dropping from" : "climbing onto") + " a ledge");
+                }
+                input.x = wantsDown ? 0 : cat.flipDirection;
+                input.y = wantsDown ? -1 : 1;
+                jumping = false;
+                cat.input[0] = input;
+                return;
+            }
+            if (cat.animation != Player.AnimationIndex.LedgeGrab)
+            {
+                ledgeTicks = 0;
             }
 
             if (jumping)
@@ -963,6 +1320,36 @@ namespace Hunted.Game
                 {
                     input.y = UnityEngine.Random.Range(0, 2) != 0 ? 1 : 0;
                 }
+                if (movementConnection.destinationCoord.y > creature.pos.y && !cat.input[1].jmp)
+                {
+                    // Movement tech the slugpup rule never uses, whenever the path goes up. Both are
+                    // jump presses, which the game reads on the edge, hence the check on last tick.
+                    if (cat.bodyMode == Player.BodyModeIndex.WallClimb && cat.canWallJump != 0)
+                    {
+                        // Sliding down a wall: a wall jump goes up and away (Player.WallJump); holding
+                        // toward the wall on the way down brings the body back for the next one.
+                        input.jmp = true;
+                        input.x = cat.bodyChunks[0].ContactPoint.x != 0 ? cat.bodyChunks[0].ContactPoint.x : input.x;
+                        if (techLogCooldown <= 0)
+                        {
+                            techLogCooldown = 40;
+                            HuntedLog.Info("[move] wall jump");
+                        }
+                    }
+                    else if (OnVerticalBeam() && movementConnection.startCoord.x == movementConnection.destinationCoord.x && cat.slideUpPole < 1 && cat.slowMovementStun < 1)
+                    {
+                        // Climbing a pole: a jump with up held and no sideways input is a pole hop, a
+                        // 17-tick boost up the pole (slideUpPole), faster than climbing hand over hand.
+                        input.x = 0;
+                        input.y = 1;
+                        input.jmp = true;
+                        if (techLogCooldown <= 0)
+                        {
+                            techLogCooldown = 40;
+                            HuntedLog.Info("[move] pole hop");
+                        }
+                    }
+                }
             }
             else
             {
@@ -973,6 +1360,12 @@ namespace Hunted.Game
             {
                 if (cat.ThrowDirection == throwAtTarget)
                 {
+                    // The game throws from the first hand that holds anything: put the weapon the AI aimed with there.
+                    PhysicalObject weapon = HeldWeapon();
+                    if (weapon != null && cat.grasps[1] != null && cat.grasps[1].grabbed == weapon)
+                    {
+                        cat.SwitchGrasps(1, 0);
+                    }
                     input.thrw = true;
                     turnDelay = 5;
                     throwAtTarget = 0;

@@ -18,13 +18,16 @@ namespace Hunted.Core.Arena
         public Vec2 Pos;
         public Vec2 Vel;
         public int Age;
+        /// <summary>A weapon thrown straight down out of a flip passes through one-way platforms (the game sets goThroughFloors on it); one thrown up passes them from below anyway.</summary>
+        public bool ThroughPlatforms;
 
-        public Projectile(WeaponKind kind, Fighter thrower, Vec2 pos, Vec2 vel)
+        public Projectile(WeaponKind kind, Fighter thrower, Vec2 pos, Vec2 vel, bool throughPlatforms = false)
         {
             Kind = kind;
             Thrower = thrower;
             Pos = pos;
             Vel = vel;
+            ThroughPlatforms = throughPlatforms;
         }
 
         /// <summary>Advances one tick and returns where it was before, for the sweep test.</summary>

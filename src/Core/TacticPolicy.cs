@@ -16,6 +16,24 @@ namespace Hunted.Core
         CloseIn = 2,
         /// <summary>Hold position and throw only if the player walks into the line.</summary>
         Wait = 3,
+        /// <summary>Belly-slide toward the player: fast, and low enough for a level throw to pass over.</summary>
+        Slide = 4,
+        /// <summary>Charged pounce: crawl, hold the jump for half a second, and leap eight to ten tiles at the player.</summary>
+        Pounce = 5,
+        /// <summary>Slide pounce: a short slide, then a long low leap out of it toward the player.</summary>
+        SlidePounce = 6,
+        /// <summary>Slide pounce and roll on landing: the longest closing move, low for most of it.</summary>
+        Roll = 7,
+        /// <summary>Run at the player, reverse and jump: a backflip that carries the body up and back.</summary>
+        Backflip = 8,
+        /// <summary>A backflip with a throw at its top: down (through platforms) at a player below, up at one above, level otherwise.</summary>
+        FlipThrow = 9,
+    }
+
+    /// <summary>Which tactics are scripted movement tech (a fixed input sequence the body runs to the end) rather than a steering rule.</summary>
+    public static class Tactics
+    {
+        public static bool IsMove(Tactic t) => t >= Tactic.Slide;
     }
 
     /// <summary>
@@ -28,8 +46,9 @@ namespace Hunted.Core
     /// </summary>
     public sealed class TacticPolicy
     {
-        public const int TacticCount = 4;
-        public const int Version = 1;
+        public const int TacticCount = 10;
+        /// <summary>Bumped when the tactic list or the feature list changes, so older files are rejected rather than misread.</summary>
+        public const int Version = 2;
 
         /// <summary>How long after a decision a reward still counts for it, in ticks.</summary>
         public int RewardWindowTicks = 80;

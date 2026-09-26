@@ -1,5 +1,7 @@
 using System;
 using System.Reflection;
+using Mono.Cecil.Cil;
+using MonoMod.Cil;
 using MonoMod.RuntimeDetour;
 using MoreSlugcats;
 using RWCustom;
@@ -9,8 +11,9 @@ namespace Hunted.Game
 {
     /// <summary>
     /// Hooks that only matter for the slugcat body (Stage 2): installing the AI,
-    /// making the body an adult with Hunter stats, letting spears hit and be thrown
-    /// despite Jolly's friendly-fire rule, colours, and how other creatures see it.
+    /// making the body an adult with Hunter stats and Hunter's hands (two hands, a
+    /// spear on the back, spears pulled out of walls), letting spears hit and be
+    /// thrown despite Jolly's friendly-fire rule, colours, and how other creatures see it.
     /// </summary>
     internal static class Stage2Hooks
     {
@@ -24,6 +27,9 @@ namespace Hunted.Game
             On.AbstractCreature.InitiateAI += AbstractCreature_InitiateAI;
             On.MoreSlugcats.SlugNPCAbstractAI.AbstractBehavior += SlugNPCAbstractAI_AbstractBehavior;
             On.Player.GetInitialSlugcatClass += Player_GetInitialSlugcatClass;
+            On.Player.ctor += Player_ctor;
+            IL.Player.Update += Player_Update_KeepBothHands;
+            On.Player.CanIPickThisUp += Player_CanIPickThisUp;
             On.Player.ShortCutColor += Player_ShortCutColor;
             On.Weapon.HitThisObject += Weapon_HitThisObject;
             On.PlayerGraphics.ApplyPalette += PlayerGraphics_ApplyPalette;
@@ -101,6 +107,72 @@ namespace Hunted.Game
                 // Red would also give the body Hunter's illness after enough cycles.
                 self.SlugCatClass = SlugcatStats.Name.White;
             }
+        }
+
+        /// <summary>Hunter's back: the body gets a spear slot (Player only makes one for the Hunter class).</summary>
+        private static void Player_ctor(On.Player.orig_ctor orig, Player self, AbstractCreature abstractCreature, World world)
+        {
+            orig(self, abstractCreature, world);
+            if (IsSlugcatPursuer(abstractCreature) && self.spearOnBack == null)
+            {
+                self.spearOnBack = new Player.SpearOnBack(self);
+            }
+        }
+
+        /// <summary>
+        /// Player.Update empties an NPC's second hand every tick (slugpups carry one thing).
+        /// The Pursuer is an adult with Hunter's hands, so that release is skipped for it:
+        /// the isNPC check guarding it reads false for the Pursuer at that one site.
+        /// </summary>
+        private static void Player_Update_KeepBothHands(ILContext il)
+        {
+            var c = new ILCursor(il);
+            if (!c.TryGotoNext(MoveType.Before,
+                x => x.MatchLdarg(0),
+                x => x.MatchCallOrCallvirt<Player>("get_isNPC"),
+                x => x.MatchBrfalse(out _),
+                x => x.MatchLdarg(0),
+                x => x.MatchCallOrCallvirt<Creature>("get_grasps"),
+                x => x.MatchLdcI4(1),
+                x => x.MatchLdelemRef(),
+                x => x.MatchBrfalse(out _),
+                x => x.MatchLdarg(0),
+                x => x.MatchLdcI4(1),
+                x => x.MatchCallOrCallvirt<Creature>("ReleaseGrasp")))
+            {
+                HuntedLog.Warn("Player.Update: the NPC one-hand rule was not found; the slugcat Pursuer will carry one item in its hands.");
+                return;
+            }
+            c.Index += 2; // after get_isNPC: the bool is on the stack
+            c.Emit(OpCodes.Ldarg_0);
+            c.EmitDelegate<Func<bool, Player, bool>>((isNpc, self) => isNpc && !IsSlugcatPursuer(self.abstractCreature));
+        }
+
+        /// <summary>Like Artificer, the Pursuer pulls spears out of walls; the rest of the rules are the game's.</summary>
+        private static bool Player_CanIPickThisUp(On.Player.orig_CanIPickThisUp orig, Player self, PhysicalObject obj)
+        {
+            if (obj is Spear spear && spear.mode == Weapon.Mode.StuckInWall && IsSlugcatPursuer(self.abstractCreature))
+            {
+                if (self.CanPutSpearToBack)
+                {
+                    return true;
+                }
+                // What CanIPickThisUp does for a free spear: a free hand, and no other spear in the hands.
+                bool freeHand = false;
+                for (int i = 0; i < self.grasps.Length; i++)
+                {
+                    if (self.grasps[i] == null)
+                    {
+                        freeHand = true;
+                    }
+                    else if (self.grasps[i].grabbed is Spear)
+                    {
+                        return false;
+                    }
+                }
+                return freeHand;
+            }
+            return orig(self, obj);
         }
 
         private static SlugcatStats Player_get_slugcatStats(Func<Player, SlugcatStats> orig, Player self)
