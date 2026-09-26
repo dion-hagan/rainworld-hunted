@@ -43,7 +43,7 @@ per instance takes under a minute. Each round ends with a judgement on a fixed s
 encounters (same seed every round, same rooms and start positions for every policy):
 every instance's policy with exploration and learning off, the **control** (the Stage 2
 rules in the learner's seat: what "no learning" scores against the same opponent), and
-four **yardsticks** (policies that always pick one tactic). The best instance by reward
+ten **yardsticks** (policies that always pick one tactic). The best instance by reward
 per encounter becomes the best-so-far if it beats the previous best, and the best-so-far
 is written as the baseline only while it beats every yardstick by more than the noise
 floor (two standard errors at the judged size). A policy that cannot beat "always Wait"
@@ -60,7 +60,7 @@ In the output folder:
   from it. `scripts/inspect_tactics.py <file>` prints what it would do in typical situations.
 - `instances/instance_N.txt`: every instance's policy, to continue from or compare.
 - `summary.txt`: appended each round: what the round trained on, the control, the
-  fairness check, the four yardsticks, every instance's judgement, the best-so-far and
+  fairness check, the ten yardsticks, every instance's judgement, the best-so-far and
   whether it clears the bar, and each instance's curve over the round in ten blocks.
 - `report.csv`: appended each round, one row per instance per block of `--block`
   encounters (round, instance, first episode, encounters, wins, deaths, trades, draws,
@@ -72,9 +72,10 @@ Create a file named `STOP` in the output folder to end a long run after the curr
 
 ## What is in the arena
 
-The learner is the real thing: `TacticPolicy` and `TinyNet` from the mod, the twelve
+The learner is the real thing: `TacticPolicy` and `TinyNet` from the mod, the fifteen
 features in the order and on the scales of `PursuerAI.ChooseTactic`, a decision every
-twenty ticks while armed and engaging, `NoteThrow` when it lines up, and the rewards of
+twenty ticks while armed and engaging (and at once when a weapon starts flying at it or a
+move ends), `NoteThrow` when it lines up or lets a flip throw go, and the rewards of
 the game hooks (hit +2/+1/+0.5 to the decision that threw, wall hit -0.2, hurt -0.25..-1,
 kill +3, death -3, with the two-second window). Its body follows the Stage 2 rules ported
 from `PursuerAI`: a throwing position level with the target at throwing range with line of
@@ -101,15 +102,31 @@ rules, which come out even (wins within a few points of deaths). The control is 
 2 rules in the learner's seat against the player-like opponent, so it is not even: the
 rules climb into the opponent's line and lose more than they win, which is the point.
 
+The six **moves** the policy can pick (see testing.md) have stand-ins in the fighter, with
+the game's timings and distances: a slide is eight ticks of crouching then fifteen ticks
+flat on the ground covering about six tiles, with twenty ticks of slowed walking after; a
+charged pounce crawls four ticks, holds the jump twenty and flies about eight tiles; a
+slide pounce leaves a twelve-tick slide at the game's launch speed (nine along, eight and a
+half up) for another eight tiles; a roll adds twenty ticks flat and fast on landing; a
+backflip runs up twelve ticks (skipped when already running that way), then goes up and
+a little back for twenty ticks in the air; a flip throw lets the weapon go five ticks into
+the flip, straight down through platforms or straight up when the target is nearly in the
+column, level otherwise. While flat both chunks lie at the lower chunk's height, so a level
+throw at chest height passes over. A move runs to its end and the body ignores steering
+meanwhile; a hit ends it; one picked when the body is not on the ground runs as Throw for
+the hold, as in the game. Wall jumps, pole hops and ledge climbs are movement-layer tech in
+the game and have no counterpart here (the arena has poles but no walls or ledges).
+
 What is simplified: the room (a floor, one-way platforms reached by poles or jumps, crates
-for cover, no water, pipes or beams), the body (two chunks that walk, jump and climb; no
-slides, pounces, wall jumps or crawling), throws (level from the main chunk at the game's
-40 px per tick, dropping at the game's rate so a level throw reaches about 430 px and one
-at 520 px passes under a target on the same floor; a miss loses the spear as it does for
-the AI in the game), damage (a spear does 0.6 to 1.4 of a slugcat's one point of health, a
-rock 0.2 and a long stun), and the opponent (it never dodges unless `--dodge` says so).
-There are no predators and no bombs, so the threat and bomb features are always zero here
-and the policy learns nothing about them until it meets them in the game.
+for cover, no water, pipes or beams), the body (two chunks that walk, jump and climb, plus
+the move stand-ins above; no wall jumps or crawling), throws (level from the main chunk at
+the game's 40 px per tick, dropping at the game's rate so a level throw reaches about 430
+px and one at 520 px passes under a target on the same floor; a miss loses the spear as it
+does for the AI in the game), damage (a spear does 0.6 to 1.4 of a slugcat's one point of
+health, a rock 0.2 and a long stun), and the opponent (it never dodges unless `--dodge`
+says so, and never uses the moves: it is the Stage 2 rules). There are no predators and no
+bombs, so the threat and bomb features are always zero here and the policy learns nothing
+about them until it meets them in the game.
 
 The baseline is a prior. When the game loads it, the counters come off (decisions,
 rewards, surprise averages): exploration starts at 30% as on a fresh slot, and the
@@ -121,19 +138,26 @@ arena taught.
 
 The duel is close to symmetric, so the learner's edge over the control is mostly fewer
 deaths and fewer wasted throws, and its edge over the best yardstick is situational:
-approach when level with the target or above it, hold when it is above you. Measured
-with four instances, 30 000 encounters each, judged over 10 000 (seeds 21 to 26):
+approach when level with the target or above it, hold when it is above you. Every move is
+a losing constant tactic here (always-Slide -1.8, always-Pounce -2.9, always-SlidePounce
+-3.1, always-Roll -2.6, always-Backflip -2.4, always-FlipThrow -2.0 per encounter, against
+always-Wait +0.35 and the control -0.09): a body running toward an armed opponent, or
+flipping in place, does not throw. What the arena teaches about them is mostly *when not*,
+and that takes data: with ten tactics, 30 000 encounters per instance leave greedy loops of
+a near-neutral move (a policy that backflips every time it lands, seven times an encounter)
+and no baseline; 100 000 clear the bar comfortably. Measured with four instances, judged
+over 4000 (seed 22):
 
-| | reward per encounter |
-|---|---|
-| control (Stage 2 rules in the learner's seat) | -0.17 to -0.08 |
-| always Wait (the best yardstick) | +0.32 to +0.41 |
-| best learned policy | +0.43 to +0.68 |
+| encounters per instance | best learned policy | margin over always-Wait |
+|---|---|---|
+| 30 000 | +0.25 | -0.11 (no baseline written) |
+| 100 000 | +0.81 | +0.46 |
+| 300 000 | +0.77 | +0.42 |
 
-The margin over always-Wait, +0.02 to +0.36, is what the bar measures. A run that does
-not clear it writes no baseline; more instances help more than more hours, because the
-policy converges within the first few thousand encounters of each instance and the run
-then picks the best of many.
+For comparison the four-tactic learner reached +0.43 to +0.68 at 30 000 (seeds 21 to 26),
+so the moves do not cost the learner anything once it has the data to rank them. More
+instances help more than more hours, because a policy converges within its first hundred
+thousand encounters and the run then picks the best of many.
 
 ## Reading the numbers
 

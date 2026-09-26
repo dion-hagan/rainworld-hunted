@@ -248,9 +248,10 @@ namespace Hunted.Core.Arena
         /// <summary>
         /// Where a thrown weapon moving from <paramref name="a"/> to <paramref name="b"/> first meets
         /// something solid, or null. <paramref name="landed"/> is true when that something is a
-        /// surface it came down on rather than a wall or crate it flew into.
+        /// surface it came down on rather than a wall or crate it flew into. With
+        /// <paramref name="throughPlatforms"/> only the floor and crate tops stop it from above.
         /// </summary>
-        public Vec2? FirstSolidHit(Vec2 a, Vec2 b, out bool landed)
+        public Vec2? FirstSolidHit(Vec2 a, Vec2 b, out bool landed, bool throughPlatforms = false)
         {
             landed = false;
             Vec2? best = null;
@@ -285,6 +286,10 @@ namespace Hunted.Core.Arena
             {
                 foreach (Surface s in Surfaces)
                 {
+                    if (throughPlatforms && s.OneWay)
+                    {
+                        continue;
+                    }
                     if (a.Y >= s.Y && b.Y <= s.Y)
                     {
                         float t = (a.Y - s.Y) / (a.Y - b.Y);

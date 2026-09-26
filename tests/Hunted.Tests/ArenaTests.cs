@@ -249,7 +249,7 @@ namespace Hunted.Tests
             Assert.True(r.Decisions > 0, "no tactic decision was made in a whole encounter");
             float[] s = match.LearnerBrain.LastSituation;
             Assert.Equal(TacticFeatures.Count, s.Length);
-            Assert.Equal(12, s.Length);
+            Assert.Equal(15, s.Length);
             foreach (float v in s)
             {
                 Assert.InRange(v, -1f, 1f);
@@ -260,6 +260,9 @@ namespace Hunted.Tests
             Assert.Equal(0f, s[9]);          // no predators in the arena
             Assert.True(s[10] == 0f || s[10] == 1f);
             Assert.Equal(0f, s[11]);         // no bombs in the arena
+            Assert.True(s[12] == 0f || s[12] == 1f);   // on the ground, free to start a move
+            Assert.True(s[13] == 0f || s[13] == 1f);   // a spear flying at it
+            Assert.True(s[14] == 0f || s[14] == 1f);   // target below
             Assert.Equal(policy.Decisions, r.Decisions);
         }
 
@@ -291,12 +294,14 @@ namespace Hunted.Tests
         [Fact]
         public void LearnerBeatsTheControlAndEveryFixedTactic()
         {
-            // Four instances, 30 000 encounters each, judged over 4000 encounters with exploration off.
+            // Four instances, 100 000 encounters each, judged over 4000 encounters with exploration off.
             // The bar a baseline must clear to be shipped: better than the scored control and better
-            // than every always-one-tactic policy by more than the noise floor. Over seeds 21..26 the
-            // margin over the control was +0.51..+0.78 and over the best fixed tactic (always Wait)
-            // +0.02..+0.36 at a 10 000-encounter judge; this seed is not the luckiest of them.
-            var options = new ArenaRunOptions { Instances = 4, Episodes = 30000, EvalEpisodes = 4000, Seed = 22, Threads = 4 };
+            // than every always-one-tactic policy by more than the noise floor. With four tactics
+            // 30 000 encounters were enough (margin over always-Wait +0.02..+0.36 over seeds 21..26);
+            // with ten, six of them moves that lose as constant tactics, 30 000 leaves greedy loops
+            // of a near-neutral move (a backflip every landing) and the margin was -0.11 on this
+            // seed; 100 000 gives +0.46 and 300 000 +0.42. Twelve seconds on four threads.
+            var options = new ArenaRunOptions { Instances = 4, Episodes = 100000, EvalEpisodes = 4000, Seed = 22, Threads = 4 };
             ArenaReport report = ArenaTrainer.Run(options);
             EvalResult learned = report.Best.Eval;
             Assert.True(learned.MeanReward > report.Control.MeanReward + 0.3f, "learned " + learned + " vs control " + report.Control);
@@ -385,6 +390,237 @@ namespace Hunted.Tests
         public void FeatureNamesMatchTheCount()
         {
             Assert.Equal(TacticFeatures.Count, TacticFeatures.Names.Length);
+            Assert.Equal(10, TacticPolicy.TacticCount);
+            Assert.Equal(TacticPolicy.TacticCount, Enum.GetValues(typeof(Tactic)).Length);
+            Assert.True(Tactics.IsMove(Tactic.Slide) && Tactics.IsMove(Tactic.FlipThrow) && !Tactics.IsMove(Tactic.Wait));
+        }
+
+        // ---------------------------------------------------------------- scripted moves
+
+        private static Fighter OnFloor(ArenaRoom room, float x)
+        {
+            var f = new Fighter("f");
+            f.Reset(new Vec2(x, 0f), room.Floor, WeaponKind.Spear);
+            return f;
+        }
+
+        private static int RunMove(Fighter f, ArenaRoom room, MoveKind kind, int dir, Action<Fighter> each = null)
+        {
+            Assert.True(f.StartMove(kind, dir));
+            int ticks = 0;
+            while (f.Move != MoveKind.None && ticks < 400)
+            {
+                f.Step(room);
+                ticks++;
+                each?.Invoke(f);
+            }
+            Assert.Equal(MoveKind.None, f.Move);
+            return ticks;
+        }
+
+        [Fact]
+        public void ASlideIsLowFastAndAboutSixTiles()
+        {
+            var room = new ArenaRoom(1200f, 500f);
+            Fighter f = OnFloor(room, 200f);
+            int lowTicks = 0;
+            int ticks = RunMove(f, room, MoveKind.Slide, 1, x => { if (x.Low) lowTicks++; });
+            Assert.InRange(f.Pos.X - 200f, 90f, 140f);
+            Assert.Equal(Fighter.SlideTicks, lowTicks);
+            Assert.Equal(Fighter.CrouchTicks + Fighter.SlideTicks, ticks);
+            Assert.True(f.Recover > 0, "no recovery after the slide");
+            Assert.False(f.Low);
+            Assert.NotNull(f.Ground);
+        }
+
+        [Fact]
+        public void ALowBodyIsMissedByALevelThrowAtChestHeight()
+        {
+            var room = new ArenaRoom(1200f, 500f);
+            Fighter f = OnFloor(room, 200f);
+            Assert.Equal(Fighter.MainChunkHeight, f.MainChunk.Y);
+            f.StartMove(MoveKind.Slide, 1);
+            for (int i = 0; i <= Fighter.CrouchTicks; i++)
+            {
+                f.Step(room);
+            }
+            Assert.True(f.Low);
+            Assert.Equal(Fighter.LowerChunkHeight, f.MainChunk.Y);
+            // A level throw from a standing thrower passes at chest height: 27 px up, 17 above a flat body's chunks of radius 10.
+            Assert.True(Fighter.MainChunkHeight - f.MainChunk.Y > Fighter.ChunkRadius);
+        }
+
+        [Fact]
+        public void AChargedPounceCrawlsChargesAndFliesAboutEightTiles()
+        {
+            var room = new ArenaRoom(1200f, 500f);
+            Fighter f = OnFloor(room, 200f);
+            bool flew = false;
+            int ticks = RunMove(f, room, MoveKind.Pounce, 1, x => flew |= x.Ground == null);
+            Assert.True(flew);
+            Assert.True(ticks > Fighter.CrawlTicks + Fighter.ChargeTicks + 10, "no flight: " + ticks + " ticks");
+            Assert.InRange(f.Pos.X - 200f, 150f, 230f);
+            Assert.NotNull(f.Ground);
+        }
+
+        [Fact]
+        public void ASlidePounceGoesAboutThirteenTilesAndARollAddsSeven()
+        {
+            var room = new ArenaRoom(1200f, 500f);
+            Fighter f = OnFloor(room, 100f);
+            RunMove(f, room, MoveKind.SlidePounce, 1);
+            float pounce = f.Pos.X - 100f;
+            Assert.InRange(pounce, 230f, 300f);
+            Assert.NotNull(f.Ground);
+
+            f = OnFloor(room, 100f);
+            int lowAfterLanding = 0;
+            bool landedOnce = false;
+            RunMove(f, room, MoveKind.Roll, 1, x =>
+            {
+                if (x.Ground != null && x.MoveTick > Fighter.CrouchTicks + Fighter.PounceTick + 2) landedOnce = true;
+                if (landedOnce && x.Low) lowAfterLanding++;
+            });
+            Assert.Equal(Fighter.RollTicks, lowAfterLanding);
+            Assert.InRange(f.Pos.X - 100f - pounce, 120f, 160f);
+        }
+
+        [Fact]
+        public void ABackflipRunsUpThenLandsNearWhereItStarted()
+        {
+            var room = new ArenaRoom(1200f, 500f);
+            Fighter f = OnFloor(room, 300f);
+            float farthest = 300f;
+            int airborne = 0;
+            RunMove(f, room, MoveKind.Backflip, 1, x => { farthest = Math.Max(farthest, x.Pos.X); if (x.Ground == null) airborne++; });
+            Assert.InRange(farthest - 300f, 45f, 60f);   // the run-up
+            Assert.InRange(airborne, 15f, 25f);          // the flip
+            Assert.True(f.Pos.X < farthest - 30f, "the flip did not carry the body back");
+            Assert.InRange(f.Pos.X - 300f, -20f, 40f);
+
+            // Already running that way: the run-up is skipped.
+            f = OnFloor(room, 300f);
+            for (int i = 0; i < 15; i++)
+            {
+                f.MoveX = 1;
+                f.Step(room);
+            }
+            float start = f.Pos.X;
+            farthest = start;
+            RunMove(f, room, MoveKind.Backflip, 1, x => farthest = Math.Max(farthest, x.Pos.X));
+            Assert.InRange(farthest - start, 0f, 10f);
+        }
+
+        [Fact]
+        public void AMoveNeedsTheGroundAndEndsOnAHit()
+        {
+            var room = new ArenaRoom(1200f, 500f);
+            Fighter f = OnFloor(room, 300f);
+            f.Jump = true;
+            f.Step(room);
+            Assert.Null(f.Ground);
+            Assert.False(f.StartMove(MoveKind.Slide, 1));
+            while (f.Ground == null)
+            {
+                f.Step(room);
+            }
+            Assert.True(f.StartMove(MoveKind.Slide, 1));
+            Assert.False(f.StartMove(MoveKind.Pounce, 1)); // one at a time
+            f.Hurt(0.2f, 30);
+            f.Step(room);
+            Assert.Equal(MoveKind.None, f.Move);
+            Assert.False(f.Low);
+        }
+
+        [Fact]
+        public void AFlipThrowDownGoesThroughThePlatform()
+        {
+            ArenaRoom room = ArenaRoom.Default();  // platform 180..480 at 140
+            var from = new Vec2(300f, 167f);
+            var to = new Vec2(300f, 100f);
+            Assert.NotNull(room.FirstSolidHit(from, to, out bool landed));
+            Assert.True(landed);
+            Assert.Null(room.FirstSolidHit(from, to, out _, throughPlatforms: true));
+            Assert.NotNull(room.FirstSolidHit(from, new Vec2(300f, -10f), out landed, throughPlatforms: true)); // the floor still stops it
+            Assert.True(landed);
+
+            var f = new Fighter("f");
+            f.Reset(new Vec2(300f, 140f), room.SurfaceAt(300f, 140f), WeaponKind.Spear);
+            Projectile p = f.ThrowVertical(-1);
+            Assert.True(p.ThroughPlatforms);
+            Assert.Equal(-Projectile.Speed, p.Vel.Y);
+            Assert.Equal(WeaponKind.None, f.Held);
+        }
+
+        [Fact]
+        public void TheBrainStartsMovesOnlyWhenFreeAndDecidesAgainWhenTheyEnd()
+        {
+            var config = new ArenaConfig { RandomRooms = false, SpareSpears = 0, OpponentGear = WeaponKind.None, OpponentPatienceTicks = 0 };
+            var match = new ArenaMatch(config, 31, ParseConstant(Tactic.SlidePounce, 31));
+            int started = 0;
+            int decisionsMidMove = 0;
+            int promptDecisions = 0;
+            int lastDecisions = 0;
+            int endedTick = -1;
+            bool wasMoving = false;
+            match.OnTick = m =>
+            {
+                if (m.Tick == 1)
+                {
+                    endedTick = -1; // a new encounter: the clock restarted and the body was reset
+                    wasMoving = false;
+                }
+                bool moving = m.Learner.Move != MoveKind.None;
+                int d = m.Policy.Decisions;
+                if (moving && !wasMoving) started++;
+                if (moving && wasMoving && d != lastDecisions) decisionsMidMove++;
+                if (!moving && wasMoving) endedTick = m.Tick;
+                // The tick after a move ends, an armed, engaging, unstunned learner decides again at once.
+                if (endedTick == m.Tick - 1 && m.LearnerBrain.CurrentMode == ArenaBrain.Mode.Engage && m.Learner.Held != WeaponKind.None && m.Learner.Stun == 0)
+                {
+                    Assert.True(d > lastDecisions, "no decision the tick after a move ended (tick " + m.Tick + ")");
+                    promptDecisions++;
+                    endedTick = -1;
+                }
+                wasMoving = moving;
+                lastDecisions = d;
+            };
+            for (int e = 0; e < 5; e++)
+            {
+                match.RunEpisode();
+            }
+            Assert.True(started > 0, "the learner never pounced");
+            Assert.True(promptDecisions > 0, "no move ended while still engaging");
+            Assert.Equal(0, decisionsMidMove);
+        }
+
+        [Fact]
+        public void AThrowAtTheLearnerTriggersADecisionAtOnce()
+        {
+            var config = new ArenaConfig { RandomRooms = false, SpareSpears = 0, OpponentPatienceTicks = 0 };
+            var policy = new TacticPolicy(TacticFeatures.Count, 33);
+            var match = new ArenaMatch(config, 33, policy);
+            int incomingTick = -1;
+            int decisionsAtIncoming = 0;
+            int decisionsSoon = -1;
+            match.OnTick = m =>
+            {
+                if (incomingTick < 0 && m.WeaponFlyingAt(m.Learner, ArenaBrain.IncomingRangePx) && m.LearnerBrain.CurrentMode == ArenaBrain.Mode.Engage && m.Learner.Held != WeaponKind.None && m.Learner.Move == MoveKind.None)
+                {
+                    incomingTick = m.Tick;
+                    decisionsAtIncoming = m.Policy.Decisions;
+                }
+                else if (incomingTick >= 0 && decisionsSoon < 0 && m.Tick == incomingTick + 1)
+                {
+                    decisionsSoon = m.Policy.Decisions;
+                }
+            };
+            for (int e = 0; e < 20 && incomingTick < 0; e++)
+            {
+                match.RunEpisode();
+            }
+            Assert.True(incomingTick >= 0, "the opponent never threw at an armed, engaging learner");
+            Assert.True(decisionsSoon > decisionsAtIncoming, "no decision within a tick of the spear coming in");
         }
 
         [Fact]

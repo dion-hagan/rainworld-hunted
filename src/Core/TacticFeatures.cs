@@ -22,9 +22,12 @@ namespace Hunted.Core
             "threat",         // threat tracker utility (predators around)
             "lined_up",       // 1 when level, in range and in sight
             "holding_bomb",   // 1 when the weapon is a scavenger bomb
+            "on_ground",      // 1 when standing on the ground with nothing in progress: a move can start
+            "spear_incoming", // 1 when a weapon the target threw is flying at me
+            "target_below",   // 1 when the target is more than a tile lower
         };
 
         /// <summary>A constant so the game can use it in constants; a test pins it to the list above.</summary>
-        public const int Count = 12;
+        public const int Count = 15;
     }
 }

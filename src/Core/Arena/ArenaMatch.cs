@@ -189,7 +189,7 @@ namespace Hunted.Core.Arena
                     OnHit(p, victim);
                     continue;
                 }
-                Vec2? wall = Room.FirstSolidHit(prev, p.Pos, out _);
+                Vec2? wall = Room.FirstSolidHit(prev, p.Pos, out _, p.ThroughPlatforms);
                 if (wall.HasValue)
                 {
                     Projectiles.RemoveAt(i);
