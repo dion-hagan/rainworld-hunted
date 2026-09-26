@@ -1,3 +1,5 @@
+using System;
+
 namespace Hunted.Core
 {
     /// <summary>
@@ -29,5 +31,30 @@ namespace Hunted.Core
 
         /// <summary>A constant so the game can use it in constants; a test pins it to the list above.</summary>
         public const int Count = 15;
+
+        /// <summary>
+        /// How close a weapon flying at the body counts as incoming: the range within which a
+        /// belly slide started on sight is flat before the weapon arrives (a level throw drops
+        /// onto a flat body from about 240 px, and the slide's crouch takes eight ticks of a
+        /// 40 px per tick flight).
+        /// </summary>
+        public const float IncomingRangePx = 230f;
+        /// <summary>A weapon further above or below the main chunk than this is not aimed at the body.</summary>
+        public const float IncomingBandPx = 60f;
+
+        /// <summary>
+        /// The spear_incoming predicate, shared by the game and the arena: <paramref name="dx"/>,
+        /// <paramref name="dy"/> is the body's main chunk relative to the weapon, and
+        /// <paramref name="vx"/>, <paramref name="vy"/> the weapon's velocity. True when the weapon
+        /// is within range, within the height band, and moving toward the body.
+        /// </summary>
+        public static bool Incoming(float dx, float dy, float vx, float vy)
+        {
+            if (Math.Abs(dy) > IncomingBandPx || dx * dx + dy * dy > IncomingRangePx * IncomingRangePx)
+            {
+                return false;
+            }
+            return dx * vx + dy * vy > 0f;
+        }
     }
 }

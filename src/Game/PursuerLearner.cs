@@ -46,11 +46,16 @@ namespace Hunted.Game
         {
             try
             {
-                if (File.Exists(path) && TacticPolicy.TryParse(File.ReadAllText(path), FeatureCount, seed, out TacticPolicy loaded))
+                if (File.Exists(path))
                 {
-                    Policy = loaded;
-                    HuntedLog.Info("Loaded learned tactics: " + loaded.Decisions + " decisions, " + loaded.Rewards + " rewards, total " + loaded.TotalReward.ToString("0.0") + ".");
-                    return;
+                    string text = File.ReadAllText(path);
+                    if (TacticPolicy.TryParse(text, FeatureCount, seed, out TacticPolicy loaded))
+                    {
+                        Policy = loaded;
+                        HuntedLog.Info("Loaded learned tactics: " + loaded.Decisions + " decisions, " + loaded.Rewards + " rewards, total " + loaded.TotalReward.ToString("0.0") + ".");
+                        return;
+                    }
+                    HuntedLog.Warn("Learned tactics rejected (" + Path.GetFileName(path) + ": " + TacticPolicy.RejectionReason(text, FeatureCount) + "); starting from the baseline or fresh, and the file is replaced at the next save.");
                 }
             }
             catch (Exception e)
@@ -75,12 +80,13 @@ namespace Hunted.Game
                 }
                 // Only the network comes along: the arena's counters would pin exploration at its
                 // floor and calibrate surprise to arena noise instead of to this player.
-                if (TacticPolicy.TryParse(TacticsFiles.ForBaselineLoad(File.ReadAllText(baselinePath)), FeatureCount, seed, out TacticPolicy baseline))
+                string prior = TacticsFiles.ForBaselineLoad(File.ReadAllText(baselinePath));
+                if (TacticPolicy.TryParse(prior, FeatureCount, seed, out TacticPolicy baseline))
                 {
                     HuntedLog.Info("Starting from the arena baseline tactics (" + TacticsFiles.Baseline + "); exploration " + (baseline.Epsilon * 100f).ToString("0") + "%.");
                     return baseline;
                 }
-                HuntedLog.Warn("Baseline tactics rejected (" + TacticsFiles.Baseline + " is not a policy with " + FeatureCount + " features); starting fresh.");
+                HuntedLog.Warn("Baseline tactics rejected (" + TacticsFiles.Baseline + ": " + TacticPolicy.RejectionReason(prior, FeatureCount) + "); starting fresh. Rerun the arena with this build and install its baseline.");
             }
             catch (Exception e)
             {
@@ -145,10 +151,11 @@ namespace Hunted.Game
             Tick++;
         }
 
-        public Tactic Choose(float[] features)
+        /// <summary>Asks the policy for a tactic; <paramref name="allowed"/> masks out tactics the body cannot run right now.</summary>
+        public Tactic Choose(float[] features, bool[] allowed = null)
         {
             dirty = true;
-            return Policy.Choose(features, Tick);
+            return Policy.Choose(features, Tick, allowed);
         }
 
         public void NoteThrow()

@@ -183,7 +183,7 @@ namespace Hunted.Core.Arena
                 Projectile p = Projectiles[i];
                 Vec2 prev = p.Advance();
                 Fighter victim = ReferenceEquals(p.Thrower, Learner) ? Opponent : Learner;
-                if (!victim.Dead && (SegmentHitsCircle(prev, p.Pos, victim.MainChunk, Fighter.ChunkRadius) || SegmentHitsCircle(prev, p.Pos, victim.LowerChunk, Fighter.ChunkRadius)))
+                if (!victim.Dead && HitsBody(prev, p.Pos, victim))
                 {
                     Projectiles.RemoveAt(i);
                     OnHit(p, victim);
@@ -310,23 +310,24 @@ namespace Hunted.Core.Arena
             return best;
         }
 
-        /// <summary>True when a weapon thrown by the other fighter is heading toward <paramref name="f"/> and within <paramref name="within"/> px.</summary>
-        public bool WeaponFlyingAt(Fighter f, float within)
+        /// <summary>The game's spear_incoming feature (<see cref="TacticFeatures.Incoming"/>): a weapon the other fighter threw is flying at <paramref name="f"/>.</summary>
+        public bool WeaponFlyingAt(Fighter f)
         {
+            Vec2 body = f.MainChunk;
             foreach (Projectile p in Projectiles)
             {
-                if (ReferenceEquals(p.Thrower, f))
+                if (!ReferenceEquals(p.Thrower, f) && TacticFeatures.Incoming(body.X - p.Pos.X, body.Y - p.Pos.Y, p.Vel.X, p.Vel.Y))
                 {
-                    continue;
+                    return true;
                 }
-                float dx = f.Pos.X - p.Pos.X;
-                if (Math.Sign(dx) != Math.Sign(p.Vel.X) || Math.Abs(dx) > within || Math.Abs(p.Pos.Y - f.Eye.Y) > 40f)
-                {
-                    continue;
-                }
-                return true;
             }
             return false;
+        }
+
+        /// <summary>Whether a weapon moving from <paramref name="a"/> to <paramref name="b"/> hits either of the body's chunks.</summary>
+        public static bool HitsBody(Vec2 a, Vec2 b, Fighter victim)
+        {
+            return SegmentHitsCircle(a, b, victim.MainChunk, Fighter.ChunkRadius) || SegmentHitsCircle(a, b, victim.LowerChunk, Fighter.ChunkRadius);
         }
 
         private static bool SegmentHitsCircle(Vec2 a, Vec2 b, Vec2 center, float radius)

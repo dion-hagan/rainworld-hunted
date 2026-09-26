@@ -78,18 +78,21 @@ namespace Hunted.Game
 
         // Learned tactics: one decision per TacticHoldTicks while armed and engaging.
         private const int TacticHoldTicks = 20;
-        /// <summary>A weapon flying at the body from closer than this counts as incoming (ten ticks of flight).</summary>
-        private const float IncomingRangePx = 400f;
         /// <summary>How long to hold up and toward a ledge before falling back to the slugpup rule (a jump).</summary>
         private const int LedgeClimbTicks = 40;
         private Tactic tactic = Tactic.Throw;
-        /// <summary>The tactic the body runs: a move that could not start runs as Throw for the hold.</summary>
-        private Tactic effectiveTactic = Tactic.Throw;
         private int tacticTicks;
         private readonly PursuerMoves moves = new PursuerMoves();
+        /// <summary>Which tactics the learner may pick this decision: the moves only when the body can start one now.</summary>
+        private readonly bool[] allowedTactics = new bool[TacticPolicy.TacticCount];
         private bool incomingLastTick;
         private int ledgeTicks;
+        private int ledgeTileY;
         private int techLogCooldown;
+        /// <summary>The tick (timeInRoom) of the pole hop's jump press: the game reads it next tick, when up must still be held.</summary>
+        private int poleHopTick = -1;
+        /// <summary>Height of the main chunk at the last wall-jump press, until the next wall contact reports the gain; NaN when none pending.</summary>
+        private float wallJumpY = float.NaN;
         private readonly float[] situation = new float[PursuerLearner.FeatureCount];
         private readonly List<IntVector2> previousAttackPositions = new List<IntVector2>();
         private readonly List<IntVector2> targetArea = new List<IntVector2>(50);
@@ -126,11 +129,11 @@ namespace Hunted.Game
                     s += "/" + tactic;
                     if (moves.Active)
                     {
-                        s += " (" + PursuerMoves.Name(moves.Running.Value) + ")";
+                        s += " (" + moves.Running.Value + " running)";
                     }
-                    else if (effectiveTactic != tactic)
+                    if (HuntedSession.Current?.ForcedTactic != null)
                     {
-                        s += " (as " + effectiveTactic + ")";
+                        s += " [forced]";
                     }
                     PursuerLearner learner = HuntedSession.Current?.Learner;
                     if (learner != null && learner.Enabled && Options.Instance != null && Options.Instance.DebugHotkeys.Value)
@@ -155,8 +158,10 @@ namespace Hunted.Game
             wantedItem = null;
             throwAtTarget = 0;
             jumping = false;
-            moves.Cancel();
+            moves.Cancel("new room");
             ledgeTicks = 0;
+            poleHopTick = -1;
+            wallJumpY = float.NaN;
         }
 
         // ------------------------------------------------------------------ per tick
@@ -303,6 +308,11 @@ namespace Hunted.Game
             else
             {
                 mode = Mode.Travel;
+            }
+
+            if (mode != Mode.Engage)
+            {
+                moves.Cancel(mode.ToString()); // a move belongs to the fight; fleeing or hiding from the rain takes the controller back
             }
 
             WorldCoordinate coord = creature.pos;
@@ -764,7 +774,7 @@ namespace Hunted.Game
                 return creature.pos; // the body is running a move; Move() feeds it the inputs
             }
             WorldCoordinate coord;
-            switch (effectiveTactic)
+            switch (tactic)
             {
                 case Tactic.CloseIn:
                     coord = target.BestGuessForPosition();
@@ -777,7 +787,7 @@ namespace Hunted.Game
                     coord = attackPos;
                     break;
             }
-            if (effectiveTactic != Tactic.Reposition && effectiveTactic != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && victim.room == cat.room)
+            if (!Tactics.IsMove(tactic) && tactic != Tactic.Reposition && tactic != Tactic.CloseIn && throwAtTarget == 0 && turnDelay == 0 && victim.room == cat.room)
             {
                 int chunk = UnityEngine.Random.Range(0, victim.bodyChunks.Length);
                 if (GoodAttackPos(victim.bodyChunks[chunk]))
@@ -819,8 +829,10 @@ namespace Hunted.Game
         /// Every TacticHoldTicks, asks the learner which tactic fits the situation; also the
         /// tick a weapon starts flying at the body (a throw is a new situation) and the tick
         /// after a move ends. With learning off (or no session) the Pursuer always throws,
-        /// which is the old behaviour. A move tactic starts the move when the body can
-        /// (<see cref="PursuerMoves.CanStart"/>) and otherwise runs as Throw for the hold.
+        /// which is the old behaviour. The moves are only offered when the body can start one
+        /// this tick (<see cref="PursuerMoves.CanStart"/>), so a move arm is never trained on
+        /// what another tactic did in its place. A forced tactic (the testing hotkey) bypasses
+        /// the learner and records nothing.
         /// </summary>
         private void ChooseTactic(Creature victim, float held)
         {
@@ -829,19 +841,20 @@ namespace Hunted.Game
                 return; // mid-move: the decision stands until the body is free again
             }
             bool incoming = SpearIncoming(victim);
-            bool interrupt = (incoming && !incomingLastTick) || moves.JustEnded;
+            // A weapon starting to fly at the body is a new situation, and so is the end of a move
+            // (the tactic is still the move but the body is free): decide now, not at the next hold.
+            bool interrupt = (incoming && !incomingLastTick) || Tactics.IsMove(tactic);
             incomingLastTick = incoming;
-            moves.Tick();
             if (!interrupt && tacticTicks-- > 0)
             {
                 return;
             }
             tacticTicks = TacticHoldTicks;
             PursuerLearner learner = HuntedSession.Current?.Learner;
-            if (learner == null || !learner.Enabled)
+            Tactic? forced = HuntedSession.Current?.ForcedTactic;
+            if (forced == null && (learner == null || !learner.Enabled))
             {
                 tactic = Tactic.Throw;
-                effectiveTactic = Tactic.Throw;
                 return;
             }
             Vector2 me = cat.mainBodyChunk.pos;
@@ -861,12 +874,23 @@ namespace Hunted.Game
             situation[i++] = threatTracker.Utility();
             situation[i++] = GoodAttackPos(victim.mainBodyChunk) ? 1f : 0f;
             situation[i++] = HeldWeapon() is ScavengerBomb ? 1f : 0f;
-            situation[i++] = PursuerMoves.CanStart(cat) ? 1f : 0f;
+            bool canStart = PursuerMoves.CanStart(cat);
+            situation[i++] = canStart ? 1f : 0f;
             situation[i++] = incoming ? 1f : 0f;
             situation[i++] = offset.y < -20f ? 1f : 0f;
+            for (int a = 0; a < allowedTactics.Length; a++)
+            {
+                allowedTactics[a] = !Tactics.IsMove((Tactic)a) || canStart;
+            }
             Tactic previous = tactic;
-            tactic = learner.Choose(situation);
-            effectiveTactic = tactic;
+            if (forced.HasValue)
+            {
+                tactic = allowedTactics[(int)forced.Value] ? forced.Value : Tactic.Throw; // a forced move waits for the ground
+            }
+            else
+            {
+                tactic = learner.Choose(situation, allowedTactics);
+            }
             if (tactic != previous)
             {
                 HuntedLog.Info("[engage] tactic " + previous + " -> " + tactic + " at " + (int)offset.magnitude + " px, dy " + (int)offset.y + ", los " + (target.VisualContact ? "yes" : "no") + (incoming ? ", spear incoming" : ""));
@@ -882,33 +906,20 @@ namespace Hunted.Game
             }
             else if (Tactics.IsMove(tactic))
             {
-                int dir = offset.x >= 0f ? 1 : -1;
-                int throwY = 0;
-                bool canStart = true;
-                if (tactic == Tactic.FlipThrow)
-                {
-                    canStart = HeldWeapon() != null;
-                    // Straight up or down only when the player is nearly in the column: a vertical throw does not steer.
-                    if (Mathf.Abs(offset.x) <= 60f && offset.y < -40f)
-                    {
-                        throwY = -1;
-                    }
-                    else if (Mathf.Abs(offset.x) <= 60f && offset.y > 40f && PursuerMoves.UpwardThrowsAllowed())
-                    {
-                        throwY = 1;
-                    }
-                }
-                if (canStart && moves.Start(cat, tactic, dir, throwY))
+                int throwY = tactic == Tactic.FlipThrow ? Tactics.FlipThrowY(offset.x, offset.y, PursuerMoves.UpwardThrowsAllowed()) : 0;
+                if (moves.Start(cat, tactic, offset.x >= 0f ? 1 : -1, throwY))
                 {
                     throwAtTarget = 0;
                     turnDelay = 0;
                     jumping = false;
                 }
-                else
-                {
-                    effectiveTactic = Tactic.Throw;
-                }
             }
+        }
+
+        /// <summary>Ends a running move from outside (the hurt hook: the game skips the AI while stunned, so the move cannot see the hit itself).</summary>
+        public void CancelMove(string reason)
+        {
+            moves.Cancel(reason);
         }
 
         /// <summary>True when a weapon the target threw is in flight toward the body, close enough to matter.</summary>
@@ -930,11 +941,10 @@ namespace Hunted.Game
                         continue;
                     }
                     Vector2 toMe = me - w.firstChunk.pos;
-                    if (toMe.magnitude > IncomingRangePx || Mathf.Abs(toMe.y) > 60f || Vector2.Dot(toMe, w.firstChunk.vel) <= 0f)
+                    if (TacticFeatures.Incoming(toMe.x, toMe.y, w.firstChunk.vel.x, w.firstChunk.vel.y))
                     {
-                        continue;
+                        return true;
                     }
-                    return true;
                 }
             }
             return false;
@@ -1152,14 +1162,15 @@ namespace Hunted.Game
 
             if (cat.animation == Player.AnimationIndex.LedgeGrab && ledgeTicks < LedgeClimbTicks)
             {
-                // Hanging from a ledge. The slugpup rule jumps here, and Player.Jump turns a jump in a
-                // ledge grab into a wall jump away from it, so an adult body never gets up. A player
-                // holds up and toward the ledge instead; Player pulls the body over (ledgeGrabCounter).
-                // Only when the path leads down do we let go.
+                // Hanging from a ledge. The slugpup rule jumps here; a player holds up and toward the
+                // ledge instead, and Player pulls the body over (ledgeGrabCounter). Which of the two
+                // an adult body needs is what the log line at the end of the grab is for. Only when
+                // the path leads down do we let go.
                 ledgeTicks++;
                 bool wantsDown = movementConnection != default(MovementConnection) && movementConnection.destinationCoord.y < creature.pos.y;
                 if (ledgeTicks == 1)
                 {
+                    ledgeTileY = cat.room.GetTilePosition(cat.bodyChunks[0].pos).y;
                     HuntedLog.Info("[move] " + (wantsDown ? "dropping from" : "climbing onto") + " a ledge");
                 }
                 input.x = wantsDown ? 0 : cat.flipDirection;
@@ -1168,9 +1179,16 @@ namespace Hunted.Game
                 cat.input[0] = input;
                 return;
             }
-            if (cat.animation != Player.AnimationIndex.LedgeGrab)
+            if (cat.animation != Player.AnimationIndex.LedgeGrab && ledgeTicks > 0)
             {
+                int feetY = cat.room.GetTilePosition(cat.bodyChunks[1].pos).y;
+                HuntedLog.Info("[move] ledge grab ended after " + ledgeTicks + " ticks: feet " + (feetY > ledgeTileY ? "above" : "not above") + " the ledge tile (" + cat.animation + "/" + cat.bodyMode + ")");
                 ledgeTicks = 0;
+            }
+            if (!float.IsNaN(wallJumpY) && (cat.bodyMode == Player.BodyModeIndex.WallClimb || cat.bodyChunks[1].ContactPoint.y < 0) && !cat.input[1].jmp)
+            {
+                HuntedLog.Info("[move] wall jump gained " + (int)(cat.mainBodyChunk.pos.y - wallJumpY) + " px (" + (cat.bodyMode == Player.BodyModeIndex.WallClimb ? "back on the wall" : "on the ground") + ")");
+                wallJumpY = float.NaN;
             }
 
             if (jumping)
@@ -1330,6 +1348,7 @@ namespace Hunted.Game
                         // toward the wall on the way down brings the body back for the next one.
                         input.jmp = true;
                         input.x = cat.bodyChunks[0].ContactPoint.x != 0 ? cat.bodyChunks[0].ContactPoint.x : input.x;
+                        wallJumpY = cat.mainBodyChunk.pos.y;
                         if (techLogCooldown <= 0)
                         {
                             techLogCooldown = 40;
@@ -1343,6 +1362,7 @@ namespace Hunted.Game
                         input.x = 0;
                         input.y = 1;
                         input.jmp = true;
+                        poleHopTick = timeInRoom;
                         if (techLogCooldown <= 0)
                         {
                             techLogCooldown = 40;
@@ -1398,6 +1418,14 @@ namespace Hunted.Game
                 {
                     input.jmp = UnityEngine.Random.Range(0, 2) == 0;
                 }
+            }
+            if (timeInRoom == poleHopTick + 1)
+            {
+                // The game acts on last tick's jump press with this tick's direction: up and no
+                // sideways input, or the hop becomes a let-go (Player.Jump on a beam). Last write wins.
+                input.x = 0;
+                input.y = 1;
+                input.jmp = false;
             }
             cat.input[0] = input;
         }

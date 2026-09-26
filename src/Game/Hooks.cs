@@ -416,6 +416,11 @@ namespace Hunted.Game
                 {
                     // Proportionate: a rock that barely scratches is not a spear in the chest.
                     s.Learner.Reward(-Mathf.Clamp(damage, 0.25f, 1f), "was hurt for " + damage.ToString("0.00"));
+                    // A hit ends whatever move the body was doing (the AI does not run while stunned, so it cannot notice by itself).
+                    if (self is Player body && body.AI is PursuerAI ai)
+                    {
+                        ai.CancelMove("hit");
+                    }
                 }
             }
             catch (Exception e)

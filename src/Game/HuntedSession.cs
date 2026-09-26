@@ -34,6 +34,8 @@ namespace Hunted.Game
         public bool OverlayVisible;
         /// <summary>What the slugcat body has learned about fighting this player.</summary>
         public PursuerLearner Learner { get; private set; }
+        /// <summary>Testing: a tactic the slugcat Pursuer runs instead of asking the learner (nothing is recorded), or null. The Force-move hotkey cycles the six moves.</summary>
+        public Tactic? ForcedTactic { get; private set; }
 
         public bool PursuerDiedThisCycle { get; private set; }
         public bool PlayerKilledByPursuer { get; private set; }
@@ -670,6 +672,14 @@ namespace Hunted.Game
             if (Input.GetKeyDown(o.KeyOverlay.Value)) OverlayVisible = !OverlayVisible;
             if (Input.GetKeyDown(o.KeyReset.Value)) Safe("reset", TestReset);
             if (Input.GetKeyDown(o.KeyForget.Value)) Safe("forget", () => Learner.Forget());
+            if (Input.GetKeyDown(o.KeyForceMove.Value)) Safe("force move", TestCycleForcedMove);
+        }
+
+        /// <summary>none, Slide, Pounce, SlidePounce, Roll, Backflip, FlipThrow, none: the Pursuer does the forced move whenever it is armed, engaging and on the ground.</summary>
+        private void TestCycleForcedMove()
+        {
+            ForcedTactic = ForcedTactic == null ? Tactic.Slide : ForcedTactic.Value >= Tactic.FlipThrow ? (Tactic?)null : ForcedTactic.Value + 1;
+            HuntedLog.Info("[test] forced tactic: " + (ForcedTactic.HasValue ? ForcedTactic.Value.ToString() : "none (the learner chooses again)"));
         }
 
         private static void Safe(string name, Action action)

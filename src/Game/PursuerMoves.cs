@@ -25,12 +25,8 @@ namespace Hunted.Game
     /// </summary>
     internal sealed class PursuerMoves
     {
-        private const int Never = -1;
-
         /// <summary>The move running now, or null.</summary>
         public Tactic? Running { get; private set; }
-        /// <summary>Set for one tick when a move has just ended (finished or given up), so the tactic decision can follow at once.</summary>
-        public bool JustEnded { get; private set; }
 
         private int dir;
         private int throwY;
@@ -96,23 +92,17 @@ namespace Hunted.Game
             ticks = 0;
             phaseTicks = 0;
             pressed = false;
-            JustEnded = false;
-            HuntedLog.Info("[move] " + Name(move) + (move == Tactic.FlipThrow ? (throwY > 0 ? " up" : throwY < 0 ? " down" : " level") : "") + " toward " + (dir > 0 ? "right" : "left") + " from " + cat.animation + "/" + cat.bodyMode);
+            HuntedLog.Info("[move] " + move + (move == Tactic.FlipThrow ? (throwY > 0 ? " up" : throwY < 0 ? " down" : " level") : "") + " toward " + (dir > 0 ? "right" : "left") + " from " + cat.animation + "/" + cat.bodyMode);
             return true;
         }
 
-        public void Cancel()
+        public void Cancel(string reason)
         {
             if (Running.HasValue)
             {
-                End("cancelled");
+                HuntedLog.Info("[move] " + Running.Value + " cancelled: " + reason);
+                End();
             }
-        }
-
-        /// <summary>Clears <see cref="JustEnded"/>; call once per tick after reading it.</summary>
-        public void Tick()
-        {
-            JustEnded = false;
         }
 
         /// <summary>
@@ -129,20 +119,34 @@ namespace Hunted.Game
             phaseTicks++;
             if (ticks > 160)
             {
-                End("gave up after 160 ticks at " + cat.animation);
-                return false;
+                return Abort(cat, "gave up after 160 ticks");
             }
+            bool running;
             switch (Running.Value)
             {
                 case Tactic.Slide:
                 case Tactic.SlidePounce:
                 case Tactic.Roll:
-                    return SlideFamily(cat, ref input);
+                    running = SlideFamily(cat, ref input);
+                    break;
                 case Tactic.Pounce:
-                    return ChargedPounce(cat, ref input);
+                    running = ChargedPounce(cat, ref input);
+                    break;
                 default:
-                    return FlipFamily(cat, ref input);
+                    running = FlipFamily(cat, ref input);
+                    break;
             }
+            if (running && cat.input[1].jmp)
+            {
+                // The game reads a jump press one update late and acts on it with this tick's
+                // direction (Player.Update reads the edge before checkInput; Jump runs after): the
+                // tick after every press repeats the press tick's direction, whatever the phase
+                // wanted. inside AI.Update, input[1] is our previous output.
+                input.x = cat.input[1].x;
+                input.y = cat.input[1].y;
+                input.downDiagonal = cat.input[1].downDiagonal;
+            }
+            return running;
         }
 
         // ------------------------------------------------------------------ charged pounce
@@ -221,7 +225,8 @@ namespace Hunted.Game
                 case 1:
                     // Crouch with the diagonal held. The body is on all fours the tick after down is
                     // pressed and only for three or four ticks before it is crawling (from which a
-                    // jump is just a hop), so the launch is pressed the first tick all fours is seen.
+                    // jump is just a hop), so the launch is pressed the first tick all fours is seen;
+                    // the game acts on it the update after, still on all fours, with the same inputs.
                     input.x = dir;
                     input.y = -1;
                     input.downDiagonal = dir;
@@ -383,7 +388,7 @@ namespace Hunted.Game
                     pressed = true;
                     if (Running == Tactic.FlipThrow && phaseTicks == 5)
                     {
-                        // Near the top of the arc: no x input makes a held y a vertical throw.
+                        // While still rising: no x input makes a held y a vertical throw.
                         input.x = throwY == 0 ? dir : 0;
                         input.y = throwY;
                         input.thrw = true;
@@ -404,42 +409,23 @@ namespace Hunted.Game
 
         private bool Finish(string what)
         {
-            HuntedLog.Info("[move] " + Name(Running.Value) + " done: " + what + " in " + ticks + " ticks");
-            End(null);
+            HuntedLog.Info("[move] " + Running.Value + " done: " + what + " in " + ticks + " ticks");
+            End();
             return false;
         }
 
         private bool Abort(Player cat, string why)
         {
-            HuntedLog.Info("[move] " + Name(Running.Value) + " given up: " + why + " (" + cat.animation + "/" + cat.bodyMode + ", tick " + ticks + ")");
-            End(null);
+            HuntedLog.Info("[move] " + Running.Value + " given up: " + why + " (" + cat.animation + "/" + cat.bodyMode + ", tick " + ticks + ")");
+            End();
             return false;
         }
 
-        private void End(string log)
+        private void End()
         {
-            if (log != null)
-            {
-                HuntedLog.Info("[move] " + Name(Running.Value) + " " + log);
-            }
             Running = null;
             jumped = false;
             pressed = false;
-            JustEnded = true;
-        }
-
-        public static string Name(Tactic move)
-        {
-            switch (move)
-            {
-                case Tactic.Slide: return "slide";
-                case Tactic.Pounce: return "pounce";
-                case Tactic.SlidePounce: return "slide pounce";
-                case Tactic.Roll: return "pounce and roll";
-                case Tactic.Backflip: return "backflip";
-                case Tactic.FlipThrow: return "flip throw";
-                default: return move.ToString();
-            }
         }
     }
 }

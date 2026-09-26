@@ -2,24 +2,6 @@ using System;
 
 namespace Hunted.Core.Arena
 {
-    /// <summary>The scripted moves a fighter can run, the arena's stand-ins for the slugcat's movement tech.</summary>
-    public enum MoveKind
-    {
-        None,
-        /// <summary>Crouch, then a belly slide: 15 ticks flat on the ground, about six tiles.</summary>
-        Slide,
-        /// <summary>Crawl a few ticks, hold the jump for 20 while flat, then leap: eight tiles or so in the air.</summary>
-        Pounce,
-        /// <summary>Crouch, a 12-tick slide, then the leap out of it: another eight tiles or so in the air.</summary>
-        SlidePounce,
-        /// <summary>A pounce that rolls on landing: 20 more ticks low and fast.</summary>
-        Roll,
-        /// <summary>A 12-tick run-up, then up and a little back; airborne for about 20 ticks.</summary>
-        Backflip,
-        /// <summary>A backflip during which the brain throws at <see cref="Fighter.FlipThrowTick"/>.</summary>
-        FlipThrow,
-    }
-
     /// <summary>
     /// A slugcat-shaped body in the arena: a point with a radius that walks, jumps,
     /// climbs poles, takes damage and holds one weapon. The numbers are close to the
@@ -66,9 +48,8 @@ namespace Hunted.Core.Arena
         public bool HoldClimbs;
 
         // A scripted move in progress (see StartMove): the body runs it to the end and ignores steering meanwhile.
-        public MoveKind Move;
-        /// <summary>Ticks since the move started.</summary>
-        public int MoveTick;
+        /// <summary>The move tactic running now (Slide..FlipThrow), or null.</summary>
+        public Tactic? Move;
         /// <summary>The move's direction along x.</summary>
         public int MoveDir;
         /// <summary>Ticks into the flip part of a backflip (0 before it leaves the ground); the brain throws at <see cref="FlipThrowTick"/>.</summary>
@@ -103,8 +84,7 @@ namespace Hunted.Core.Arena
             Held = held;
             ThrowCooldown = 0;
             HoldClimbs = false;
-            Move = MoveKind.None;
-            MoveTick = 0;
+            Move = null;
             FlipTick = 0;
             Low = false;
             Recover = 0;
@@ -114,57 +94,59 @@ namespace Hunted.Core.Arena
 
         // ------------------------------------------------------------------ scripted moves
 
-        /// <summary>Ticks a belly slide's crouch takes before the body launches (face the direction, hold down until it is on all fours).</summary>
+        // The stand-ins' timings and distances, each with the line of the decompiled Player.cs it comes from.
+        /// <summary>Ticks a belly slide's crouch takes before the body launches: face the direction, hold down until it is on all fours (Player.cs:9180-9212: DownOnFours after five frames not standing), press.</summary>
         public const int CrouchTicks = 8;
-        /// <summary>A belly slide lasts this long (the game ends it at rollCounter 15).</summary>
+        /// <summary>A belly slide lasts this long (Player.cs:8450: the slide ends at rollCounter over 15).</summary>
         public const int SlideTicks = 15;
-        /// <summary>The slide tick a pounce leaves from (the game's window is rollCounter 12 to 15).</summary>
+        /// <summary>The slide tick a pounce leaves from (Player.cs:8450: a jump before rollCounter 12 cancels the slide; 13100-13130: one at 12 to 15 is the RocketJump).</summary>
         public const int PounceTick = 12;
-        /// <summary>A landing roll lasts this long (the game's roll ends after rollCounter 15 once the diagonal is released, 30 at most).</summary>
+        /// <summary>A landing roll lasts this long (Player.cs:8318: the roll ends after rollCounter 15 once the diagonal is released, 30 at most).</summary>
         public const int RollTicks = 20;
-        /// <summary>A backflip needs this much running first (the game's initSlideCounter must pass 10).</summary>
+        /// <summary>A backflip needs this much running first (Player.cs:9285: initSlideCounter must pass 10 for the skid).</summary>
         public const int RunUpTicks = 12;
-        /// <summary>The tick of the flip at which a flip throw leaves the hand (near the top of the arc).</summary>
+        /// <summary>The tick of the flip at which a flip throw leaves the hand, while the body is still rising (PursuerMoves throws at flip tick 5; unmeasured against the game until playtested).</summary>
         public const int FlipThrowTick = 5;
-        /// <summary>Speed the pounce leaves the slide with (the game's RocketJump from a belly slide: 9 along, 8.5 up).</summary>
+        /// <summary>Speed the pounce leaves the slide with (Player.cs:13015-13026: the RocketJump out of a belly slide is 9 along and 8.5 up).</summary>
         public const float PounceSpeedX = 9f;
         public const float PounceSpeedY = 8.5f;
-        /// <summary>The charged pounce: a few ticks of crawling toward the target, then the jump button held this long (the game's superLaunchJump reaching 20).</summary>
+        /// <summary>The charged pounce: a few ticks of crawling toward the target so the head leads, then the jump held this long (Player.cs:12644: superLaunchJump counts to 20).</summary>
         public const int CrawlTicks = 4;
         public const int ChargeTicks = 20;
         public const float CrawlSpeed = 2f;
-        /// <summary>The charged pounce's launch (the game adds 9 along and 3 to 4 up plus a held jump boost: about eight tiles).</summary>
+        /// <summary>The charged pounce's launch (Player.cs:13173-13215: 9 along, 3 to 4 up plus a held jump boost of 6: about eight tiles).</summary>
         public const float ChargedSpeedX = 9f;
         public const float ChargedSpeedY = 8f;
-        /// <summary>The flip's launch: 9 up, and the reversal leaves about 2 px per tick backward.</summary>
+        /// <summary>The flip's launch (Player.cs:13130-13136: 9 up for the head, 7 for the body; x halved then 4 back for the head, so about 2 px per tick backward with no air control). Unmeasured against the game until playtested.</summary>
         public const float FlipSpeedX = 2f;
         public const float FlipSpeedY = 9f;
+        /// <summary>Rolling speed (Player.cs:8292: 1.1 px per tick added against friction).</summary>
         public const float RollSpeed = 7f;
+        /// <summary>Slowed walking after a belly slide (Player.cs:8473: slowMovementStun 20 when it finishes standing, 40 when not).</summary>
         public const int RecoverTicks = 20;
 
         /// <summary>True when a move can start this tick: on the ground, standing, nothing else in progress.</summary>
-        public bool CanStartMove => Ground != null && OnPole == null && Move == MoveKind.None && Stun == 0 && !Dead;
+        public bool CanStartMove => Ground != null && OnPole == null && !Move.HasValue && Stun == 0 && !Dead;
 
         /// <summary>
         /// Starts a scripted move in <paramref name="direction"/> (-1 or 1). The body then runs
         /// the sequence on its own: crouch and slide (and pounce, and roll), or run up and flip.
         /// Returns false when it cannot start now.
         /// </summary>
-        public bool StartMove(MoveKind kind, int direction)
+        public bool StartMove(Tactic kind, int direction)
         {
-            if (kind == MoveKind.None || !CanStartMove)
+            if (!Tactics.IsMove(kind) || !CanStartMove)
             {
                 return false;
             }
             Move = kind;
             MoveDir = direction >= 0 ? 1 : -1;
             Facing = MoveDir;
-            MoveTick = 0;
             FlipTick = 0;
             phase = 0;
             phaseTick = 0;
             // A body already running this way skips the run-up, as the game does (initSlideCounter carries over).
-            if ((kind == MoveKind.Backflip || kind == MoveKind.FlipThrow) && runTicks > 10 && Facing == MoveDir)
+            if ((kind == Tactic.Backflip || kind == Tactic.FlipThrow) && runTicks > 10 && Facing == MoveDir)
             {
                 phaseTick = RunUpTicks - 1;
             }
@@ -174,7 +156,7 @@ namespace Hunted.Core.Arena
 
         private void EndMove()
         {
-            Move = MoveKind.None;
+            Move = null;
             Low = false;
             FlipTick = 0;
         }
@@ -182,20 +164,19 @@ namespace Hunted.Core.Arena
         /// <summary>One tick of the move in progress. Steering is ignored while it runs.</summary>
         private void StepMove(ArenaRoom room)
         {
-            MoveTick++;
             phaseTick++;
             switch (Move)
             {
-                case MoveKind.Slide:
-                case MoveKind.SlidePounce:
-                case MoveKind.Roll:
+                case Tactic.Slide:
+                case Tactic.SlidePounce:
+                case Tactic.Roll:
                     StepSlideFamily(room);
                     break;
-                case MoveKind.Pounce:
+                case Tactic.Pounce:
                     StepChargedPounce(room);
                     break;
-                case MoveKind.Backflip:
-                case MoveKind.FlipThrow:
+                case Tactic.Backflip:
+                case Tactic.FlipThrow:
                     StepFlipFamily(room);
                     break;
             }
@@ -229,7 +210,7 @@ namespace Hunted.Core.Arena
                     StepAirborne(room);
                     return;
                 }
-                int length = Move == MoveKind.Slide ? SlideTicks : PounceTick;
+                int length = Move == Tactic.Slide ? SlideTicks : PounceTick;
                 float speed = 12f * (float)Math.Sin(Math.PI * (phaseTick - 0.5) / SlideTicks);
                 Vel = new Vec2(MoveDir * speed, 0f);
                 SlideAlongGround(room);
@@ -240,7 +221,7 @@ namespace Hunted.Core.Arena
                 }
                 if (phaseTick >= length)
                 {
-                    if (Move == MoveKind.Slide)
+                    if (Move == Tactic.Slide)
                     {
                         Recover = RecoverTicks;
                         EndMove();
@@ -262,7 +243,7 @@ namespace Hunted.Core.Arena
                 StepAirborne(room);
                 if (Ground != null)
                 {
-                    if (Move == MoveKind.Roll)
+                    if (Move == Tactic.Roll)
                     {
                         phase = 3;
                         phaseTick = 0;
@@ -523,7 +504,7 @@ namespace Hunted.Core.Arena
             {
                 Stun--;
                 ClearInputs();
-                if (Move != MoveKind.None)
+                if (Move.HasValue)
                 {
                     EndMove(); // a hit ends whatever the body was doing
                 }
@@ -536,7 +517,7 @@ namespace Hunted.Core.Arena
             {
                 Recover--;
             }
-            if (Move != MoveKind.None)
+            if (Move.HasValue)
             {
                 StepMove(room);
                 ClearInputs();
@@ -642,7 +623,7 @@ namespace Hunted.Core.Arena
 
         private void StepAirborne(ArenaRoom room)
         {
-            if (Move == MoveKind.None)
+            if (!Move.HasValue)
             {
                 Vel.X = MoveX != 0 ? MoveX * WalkSpeed : Vel.X * 0.9f;
             }
