@@ -118,7 +118,7 @@ Spawns with nothing. Gear tiers, weakest to strongest:
 
 **Onscreen acquisition:** item-seeking is a behavior mode (§7.2). The Pursuer picks up anything better than what it holds, and will detour to kill scavengers carrying higher-tier gear if it can win the fight (compare its loadout vs. the scavenger's; avoid scavenger packs).
 
-**Offscreen acquisition:** each cycle, roll per region traversed. Regions with high scavenger density (e.g., Outskirts toll areas, Garbage Wastes) give better odds of rock→spear and spear→explosive upgrades. Inventory is stored in save data (up to 2 held items, matching slugcat hands).
+**Offscreen acquisition:** each cycle, roll per region traversed. Regions with high scavenger density (e.g., Outskirts toll areas, Garbage Wastes) give better odds of rock→spear and spear→explosive upgrades. Inventory is stored in save data (up to 3 items: two hands plus one spear on the back, matching Hunter; only one hand can hold a spear).
 
 ### 6.4 Death & persistence
 

@@ -10,7 +10,7 @@ any story game. Watch the red tracker line at the top of the screen and
 | **F5** Summon | Marks the Pursuer as arrived in your region and spawns it two rooms away from you, with no grace period. It starts pathing to your room immediately. |
 | **F6** Bring | Makes the Pursuer enter your current room through a pipe (spawning it first if needed). Use this to test combat. |
 | **F7** Advance | Applies one cycle of offscreen tracking right now, as if you had just slept in the nearest shelter: it moves the configured number of shelters, rolls offscreen gear, and spawns into the region if it arrived. Press it repeatedly to watch the countdown. |
-| **F8** Gear | Cycles its loadout: nothing → rock → spear → explosive spear → spear + scavenger bomb. Re-spawns the creature where it is so the new gear is in its hands. |
+| **F8** Gear | Cycles its loadout: nothing → rock → spear → explosive spear → spear + scavenger bomb → explosive spear + bomb + spear on the back. Re-spawns the creature where it is so the new gear is in its hands. |
 | **F9** Kill | Kills it where it stands. It drops its gear; the death/respawn rules apply at the next sleep. |
 | **F10** Overlay | Toggles the tracker line. |
 | **F11** Reset | Despawns it and places it far away again, exactly like the start of a new campaign. |
@@ -28,8 +28,11 @@ them. Without Downpour the scavenger is always used.
 With the slugcat body the overlay shows the AI's mode: *Travel* (heading for
 your room), *Search* (going to where it last saw you), *Engage* (lined up to
 throw, or closing in), *Scavenge* (going for a better weapon), *Flee* (a
-predator has the upper hand) and *EscapeRain*. It holds one item; F8 cycles
-rock, spear, explosive spear and bomb.
+predator has the upper hand) and *EscapeRain*. It carries gear like Hunter: a spear
+in one hand, a rock or bomb in the other, and a spare spear on its back that it
+draws when its hands run out, and it pulls spears out of walls like Artificer. F8
+cycles rock, spear, explosive spear, spear + bomb and the full loadout; the log has
+one `[gear]` line per pickup, stow and draw.
 
 While it is armed and engaging, the mode also shows the **tactic** it picked. Four are
 steering rules (*Throw*, *Reposition*, *CloseIn*, *Wait*) and six are **moves**: the input

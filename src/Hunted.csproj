@@ -41,6 +41,11 @@
       <HintPath>$(RainWorldBepInExCorePath)\MonoMod.Utils.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Mono.Cecil for the IL hook that lets the slugcat body keep both hands -->
+    <Reference Include="Mono.Cecil">
+      <HintPath>$(RainWorldBepInExCorePath)\Mono.Cecil.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Game + Unity assemblies, from RainWorld_Data/Managed -->

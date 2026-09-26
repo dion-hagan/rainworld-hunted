@@ -24,10 +24,10 @@ namespace Hunted.Game
             return StaticWorld.GetCreatureTemplate(CreatureTemplate.Type.Scavenger);
         }
 
-        /// <summary>How many items the body can carry: a scavenger fills its hands and back, a slugcat NPC keeps one hand.</summary>
+        /// <summary>How many items the body can carry: a scavenger fills its hands and back, a slugcat has two hands and a spear on its back.</summary>
         public static int HeldItems(PursuerBody body)
         {
-            return body == PursuerBody.Slugcat ? 1 : 4;
+            return body == PursuerBody.Slugcat ? GearTier.MaxHeld : 4;
         }
 
         /// <summary>
@@ -81,6 +81,10 @@ namespace Hunted.Game
         /// <summary>The items a body can actually hold, best first.</summary>
         public static List<string> TrimToBody(IEnumerable<string> inventory, PursuerBody body)
         {
+            if (body == PursuerBody.Slugcat)
+            {
+                return GearTier.TrimToCarryable(inventory);
+            }
             var items = new List<string>();
             if (inventory != null)
             {
@@ -123,21 +127,32 @@ namespace Hunted.Game
             }
             World world = creature.world;
             AbstractRoom room = creature.Room;
+            var codes = new List<string>(inventory);
+            // A slugcat body carries one spear on its back (PursuerAI attaches it once the body is realized).
+            int backIdx = PursuerBodies.IsSlugcat(creature) ? GearTier.BackSpearIndex(codes) : -1;
             int grasp = 0;
-            foreach (string code in inventory)
+            for (int i = 0; i < codes.Count; i++)
             {
-                if (grasp >= 4)
+                bool onBack = i == backIdx;
+                if (!onBack && grasp >= (PursuerBodies.IsSlugcat(creature) ? GearTier.Hands : 4))
                 {
                     break;
                 }
-                AbstractPhysicalObject item = CreateItem(world, code, creature.pos);
+                AbstractPhysicalObject item = CreateItem(world, codes[i], creature.pos);
                 if (item == null)
                 {
                     continue;
                 }
                 room.AddEntity(item);
-                new AbstractPhysicalObject.CreatureGripStick(creature, item, grasp, true);
-                grasp++;
+                if (onBack)
+                {
+                    new Player.AbstractOnBackStick(creature, item);
+                }
+                else
+                {
+                    new AbstractPhysicalObject.CreatureGripStick(creature, item, grasp, true);
+                    grasp++;
+                }
             }
         }
 
@@ -164,7 +179,7 @@ namespace Hunted.Game
             }
         }
 
-        /// <summary>Item codes for everything the creature is carrying.</summary>
+        /// <summary>Item codes for everything the creature is carrying: in its hands, and on its back.</summary>
         public static List<string> ReadInventory(AbstractCreature creature)
         {
             var result = new List<string>();
@@ -174,7 +189,7 @@ namespace Hunted.Game
             }
             foreach (AbstractPhysicalObject.AbstractObjectStick stick in creature.stuckObjects)
             {
-                if (!(stick is AbstractPhysicalObject.CreatureGripStick) || stick.A != creature)
+                if (!(stick is AbstractPhysicalObject.CreatureGripStick || stick is Player.AbstractOnBackStick) || stick.A != creature)
                 {
                     continue;
                 }
