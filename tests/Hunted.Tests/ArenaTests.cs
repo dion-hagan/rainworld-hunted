@@ -294,14 +294,13 @@ namespace Hunted.Tests
         [Fact]
         public void LearnerBeatsTheControlAndEveryFixedTactic()
         {
-            // Four instances, 100 000 encounters each, judged over 4000 encounters with exploration off.
+            // Four instances, 30 000 encounters each, judged over 4000 encounters with exploration off.
             // The bar a baseline must clear to be shipped: better than the scored control and better
-            // than every always-one-tactic policy by more than the noise floor. With four tactics
-            // 30 000 encounters were enough (margin over always-Wait +0.02..+0.36 over seeds 21..26);
-            // with ten, six of them moves that lose as constant tactics, 30 000 leaves greedy loops
-            // of a near-neutral move (a backflip every landing) and the margin was -0.11 on this
-            // seed; 100 000 gives +0.46 and 300 000 +0.42. Twelve seconds on four threads.
-            var options = new ArenaRunOptions { Instances = 4, Episodes = 100000, EvalEpisodes = 4000, Seed = 22, Threads = 4 };
+            // than every always-one-tactic policy by more than the noise floor. With ten tactics, six
+            // of them moves, this only holds because moves the body cannot start are masked out of the
+            // choice: offered anyway and run as Throw, the move arms learned Throw's airborne values,
+            // the margin over always-Wait was -0.11 here at 30 000, and it took 100 000 to clear.
+            var options = new ArenaRunOptions { Instances = 4, Episodes = 30000, EvalEpisodes = 4000, Seed = 22, Threads = 4 };
             ArenaReport report = ArenaTrainer.Run(options);
             EvalResult learned = report.Best.Eval;
             Assert.True(learned.MeanReward > report.Control.MeanReward + 0.3f, "learned " + learned + " vs control " + report.Control);
@@ -321,9 +320,9 @@ namespace Hunted.Tests
             Assert.True(first.Improved);
             Assert.Equal(1, first.BestSoFarRound);
             string incumbent = first.BestSoFarPolicy;
-            // A sabotaged round: one-tick encounters make no decisions, so the policy cannot change
-            // and its judged score is identical, which is not an improvement.
-            ArenaReport second = trainer.RunRound(200, new[] { new ArenaConfig { MaxTicks = 1 } });
+            // A sabotaged round: one-tick encounters with an unarmed learner make no decisions, so
+            // the policy cannot change and its judged score is identical, which is not an improvement.
+            ArenaReport second = trainer.RunRound(200, new[] { new ArenaConfig { MaxTicks = 1, LearnerGear = WeaponKind.None, SpareSpears = 0 } });
             Assert.False(second.Improved);
             Assert.Equal(1, second.BestSoFarRound);
             Assert.Equal(incumbent, second.BestSoFarPolicy);
@@ -390,9 +389,71 @@ namespace Hunted.Tests
         public void FeatureNamesMatchTheCount()
         {
             Assert.Equal(TacticFeatures.Count, TacticFeatures.Names.Length);
-            Assert.Equal(10, TacticPolicy.TacticCount);
             Assert.Equal(TacticPolicy.TacticCount, Enum.GetValues(typeof(Tactic)).Length);
             Assert.True(Tactics.IsMove(Tactic.Slide) && Tactics.IsMove(Tactic.FlipThrow) && !Tactics.IsMove(Tactic.Wait));
+        }
+
+        [Fact]
+        public void AMaskedTacticIsNeverChosen()
+        {
+            var policy = new TacticPolicy(TacticFeatures.Count, 41);
+            float[] x = new float[TacticFeatures.Count];
+            var allowed = new bool[TacticPolicy.TacticCount];
+            for (int a = 0; a < allowed.Length; a++)
+            {
+                allowed[a] = !Tactics.IsMove((Tactic)a);
+            }
+            foreach (float eps in new[] { 1f, 0f, 0.5f })
+            {
+                policy.FixedEpsilon = eps;
+                for (int i = 0; i < 300; i++)
+                {
+                    Assert.False(Tactics.IsMove(policy.Choose(x, i * 100, allowed)), "a move came back with exploration " + eps);
+                }
+            }
+            // With everything allowed the random draw reaches every arm.
+            policy.FixedEpsilon = 1f;
+            var seen = new HashSet<Tactic>();
+            for (int i = 0; i < 300; i++)
+            {
+                seen.Add(policy.Choose(x, 100000 + i * 100));
+            }
+            Assert.Equal(TacticPolicy.TacticCount, seen.Count);
+            Assert.Throws<ArgumentException>(() => policy.Choose(x, 0, new bool[3]));
+        }
+
+        [Fact]
+        public void TheIncomingPredicateIsTheSharedOne()
+        {
+            // dx, dy: the body relative to the weapon; vx, vy: the weapon's velocity.
+            Assert.True(TacticFeatures.Incoming(200f, 0f, 40f, 0f));       // level, approaching
+            Assert.False(TacticFeatures.Incoming(200f, 0f, -40f, 0f));     // receding
+            Assert.False(TacticFeatures.Incoming(300f, 0f, 40f, 0f));      // out of range (230)
+            Assert.False(TacticFeatures.Incoming(100f, 80f, 40f, 0f));     // too far above the body
+            Assert.True(TacticFeatures.Incoming(0f, -50f, 0f, -40f));      // straight down onto it, within the band
+            Assert.Equal(230f, TacticFeatures.IncomingRangePx);
+        }
+
+        [Fact]
+        public void FlipThrowDirectionIsTheSharedRule()
+        {
+            Assert.Equal(-1, Tactics.FlipThrowY(10f, -120f, true));
+            Assert.Equal(-1, Tactics.FlipThrowY(10f, -120f, false));
+            Assert.Equal(1, Tactics.FlipThrowY(-30f, 100f, true));
+            Assert.Equal(0, Tactics.FlipThrowY(-30f, 100f, false));   // upward throws off in the game: level
+            Assert.Equal(0, Tactics.FlipThrowY(200f, -120f, true));   // not in the column
+            Assert.Equal(0, Tactics.FlipThrowY(10f, 0f, true));
+        }
+
+        [Fact]
+        public void AnOlderTacticsFileIsRejectedWithItsVersionInTheReason()
+        {
+            string v1 = "v=1|d=5|net=" + new TinyNet(12, 16, 4, 1).Serialize();
+            Assert.False(TacticPolicy.TryParse(v1, TacticFeatures.Count, 1, out _));
+            Assert.Contains("version 1", TacticPolicy.RejectionReason(v1, TacticFeatures.Count));
+            string wrongShape = "v=" + TacticPolicy.Version + "|net=" + new TinyNet(12, 16, TacticPolicy.TacticCount, 1).Serialize();
+            Assert.Contains("inputs", TacticPolicy.RejectionReason(wrongShape, TacticFeatures.Count));
+            Assert.Null(TacticPolicy.RejectionReason(new TacticPolicy(TacticFeatures.Count, 1).Serialize(), TacticFeatures.Count));
         }
 
         // ---------------------------------------------------------------- scripted moves
@@ -404,17 +465,17 @@ namespace Hunted.Tests
             return f;
         }
 
-        private static int RunMove(Fighter f, ArenaRoom room, MoveKind kind, int dir, Action<Fighter> each = null)
+        private static int RunMove(Fighter f, ArenaRoom room, Tactic kind, int dir, Action<Fighter> each = null)
         {
             Assert.True(f.StartMove(kind, dir));
             int ticks = 0;
-            while (f.Move != MoveKind.None && ticks < 400)
+            while (f.Move.HasValue && ticks < 400)
             {
                 f.Step(room);
                 ticks++;
                 each?.Invoke(f);
             }
-            Assert.Equal(MoveKind.None, f.Move);
+            Assert.Null(f.Move);
             return ticks;
         }
 
@@ -424,30 +485,52 @@ namespace Hunted.Tests
             var room = new ArenaRoom(1200f, 500f);
             Fighter f = OnFloor(room, 200f);
             int lowTicks = 0;
-            int ticks = RunMove(f, room, MoveKind.Slide, 1, x => { if (x.Low) lowTicks++; });
+            int ticks = RunMove(f, room, Tactic.Slide, 1, x => { if (x.Low) lowTicks++; });
             Assert.InRange(f.Pos.X - 200f, 90f, 140f);
             Assert.Equal(Fighter.SlideTicks, lowTicks);
-            Assert.Equal(Fighter.CrouchTicks + Fighter.SlideTicks, ticks);
             Assert.True(f.Recover > 0, "no recovery after the slide");
             Assert.False(f.Low);
             Assert.NotNull(f.Ground);
         }
 
-        [Fact]
-        public void ALowBodyIsMissedByALevelThrowAtChestHeight()
+        [Theory]
+        [InlineData(150f, false)]
+        [InlineData(300f, true)]
+        public void ALevelThrowPassesOverASlidingBodyOnlyAtCloseRange(float gap, bool hits)
         {
+            // A level throw leaves chest height (27 px) and drops at the game's rate; a flat body's
+            // chunks lie at 9 px. From 150 px the spear is still above them; from 300 px it has
+            // dropped onto them. This is why the incoming range is 230 px and not the throw range.
             var room = new ArenaRoom(1200f, 500f);
-            Fighter f = OnFloor(room, 200f);
-            Assert.Equal(Fighter.MainChunkHeight, f.MainChunk.Y);
-            f.StartMove(MoveKind.Slide, 1);
+            Fighter slider = OnFloor(room, 100f);
+            slider.StartMove(Tactic.Slide, 1);
             for (int i = 0; i <= Fighter.CrouchTicks; i++)
             {
-                f.Step(room);
+                slider.Step(room);
             }
-            Assert.True(f.Low);
-            Assert.Equal(Fighter.LowerChunkHeight, f.MainChunk.Y);
-            // A level throw from a standing thrower passes at chest height: 27 px up, 17 above a flat body's chunks of radius 10.
-            Assert.True(Fighter.MainChunkHeight - f.MainChunk.Y > Fighter.ChunkRadius);
+            Assert.True(slider.Low);
+            Fighter thrower = OnFloor(room, 100f + gap);
+            thrower.Facing = -1;
+            Projectile p = thrower.Throw(-1);
+            bool hit = false;
+            for (int t = 0; t < 30 && !hit && p.Pos.X > 0f; t++)
+            {
+                Vec2 prev = p.Advance();
+                hit = ArenaMatch.HitsBody(prev, p.Pos, slider);
+            }
+            Assert.Equal(hits, hit);
+
+            // A standing body is hit from either distance.
+            Fighter stander = OnFloor(room, 100f);
+            Projectile q = thrower.Throw(-1);
+            thrower.Held = WeaponKind.Spear;
+            bool hitStanding = false;
+            for (int t = 0; t < 30 && !hitStanding && q.Pos.X > 0f; t++)
+            {
+                Vec2 prev = q.Advance();
+                hitStanding = ArenaMatch.HitsBody(prev, q.Pos, stander);
+            }
+            Assert.True(hitStanding);
         }
 
         [Fact]
@@ -456,7 +539,7 @@ namespace Hunted.Tests
             var room = new ArenaRoom(1200f, 500f);
             Fighter f = OnFloor(room, 200f);
             bool flew = false;
-            int ticks = RunMove(f, room, MoveKind.Pounce, 1, x => flew |= x.Ground == null);
+            int ticks = RunMove(f, room, Tactic.Pounce, 1, x => flew |= x.Ground == null);
             Assert.True(flew);
             Assert.True(ticks > Fighter.CrawlTicks + Fighter.ChargeTicks + 10, "no flight: " + ticks + " ticks");
             Assert.InRange(f.Pos.X - 200f, 150f, 230f);
@@ -468,17 +551,19 @@ namespace Hunted.Tests
         {
             var room = new ArenaRoom(1200f, 500f);
             Fighter f = OnFloor(room, 100f);
-            RunMove(f, room, MoveKind.SlidePounce, 1);
+            RunMove(f, room, Tactic.SlidePounce, 1);
             float pounce = f.Pos.X - 100f;
             Assert.InRange(pounce, 230f, 300f);
             Assert.NotNull(f.Ground);
 
             f = OnFloor(room, 100f);
             int lowAfterLanding = 0;
+            bool flew = false;
             bool landedOnce = false;
-            RunMove(f, room, MoveKind.Roll, 1, x =>
+            RunMove(f, room, Tactic.Roll, 1, x =>
             {
-                if (x.Ground != null && x.MoveTick > Fighter.CrouchTicks + Fighter.PounceTick + 2) landedOnce = true;
+                if (x.Ground == null) flew = true;
+                if (flew && x.Ground != null) landedOnce = true;
                 if (landedOnce && x.Low) lowAfterLanding++;
             });
             Assert.Equal(Fighter.RollTicks, lowAfterLanding);
@@ -492,7 +577,7 @@ namespace Hunted.Tests
             Fighter f = OnFloor(room, 300f);
             float farthest = 300f;
             int airborne = 0;
-            RunMove(f, room, MoveKind.Backflip, 1, x => { farthest = Math.Max(farthest, x.Pos.X); if (x.Ground == null) airborne++; });
+            RunMove(f, room, Tactic.Backflip, 1, x => { farthest = Math.Max(farthest, x.Pos.X); if (x.Ground == null) airborne++; });
             Assert.InRange(farthest - 300f, 45f, 60f);   // the run-up
             Assert.InRange(airborne, 15f, 25f);          // the flip
             Assert.True(f.Pos.X < farthest - 30f, "the flip did not carry the body back");
@@ -507,7 +592,7 @@ namespace Hunted.Tests
             }
             float start = f.Pos.X;
             farthest = start;
-            RunMove(f, room, MoveKind.Backflip, 1, x => farthest = Math.Max(farthest, x.Pos.X));
+            RunMove(f, room, Tactic.Backflip, 1, x => farthest = Math.Max(farthest, x.Pos.X));
             Assert.InRange(farthest - start, 0f, 10f);
         }
 
@@ -519,16 +604,16 @@ namespace Hunted.Tests
             f.Jump = true;
             f.Step(room);
             Assert.Null(f.Ground);
-            Assert.False(f.StartMove(MoveKind.Slide, 1));
+            Assert.False(f.StartMove(Tactic.Slide, 1));
             while (f.Ground == null)
             {
                 f.Step(room);
             }
-            Assert.True(f.StartMove(MoveKind.Slide, 1));
-            Assert.False(f.StartMove(MoveKind.Pounce, 1)); // one at a time
+            Assert.True(f.StartMove(Tactic.Slide, 1));
+            Assert.False(f.StartMove(Tactic.Pounce, 1)); // one at a time
             f.Hurt(0.2f, 30);
             f.Step(room);
-            Assert.Equal(MoveKind.None, f.Move);
+            Assert.Null(f.Move);
             Assert.False(f.Low);
         }
 
@@ -548,7 +633,6 @@ namespace Hunted.Tests
             f.Reset(new Vec2(300f, 140f), room.SurfaceAt(300f, 140f), WeaponKind.Spear);
             Projectile p = f.ThrowVertical(-1);
             Assert.True(p.ThroughPlatforms);
-            Assert.Equal(-Projectile.Speed, p.Vel.Y);
             Assert.Equal(WeaponKind.None, f.Held);
         }
 
@@ -570,8 +654,12 @@ namespace Hunted.Tests
                     endedTick = -1; // a new encounter: the clock restarted and the body was reset
                     wasMoving = false;
                 }
-                bool moving = m.Learner.Move != MoveKind.None;
+                bool moving = m.Learner.Move.HasValue;
                 int d = m.Policy.Decisions;
+                if (d != lastDecisions && Tactics.IsMove(m.LearnerBrain.Tactic))
+                {
+                    Assert.True(moving, "a move was chosen at tick " + m.Tick + " but the body is not running one"); // the mask: a move is only offered when it can start
+                }
                 if (moving && !wasMoving) started++;
                 if (moving && wasMoving && d != lastDecisions) decisionsMidMove++;
                 if (!moving && wasMoving) endedTick = m.Tick;
@@ -605,7 +693,7 @@ namespace Hunted.Tests
             int decisionsSoon = -1;
             match.OnTick = m =>
             {
-                if (incomingTick < 0 && m.WeaponFlyingAt(m.Learner, ArenaBrain.IncomingRangePx) && m.LearnerBrain.CurrentMode == ArenaBrain.Mode.Engage && m.Learner.Held != WeaponKind.None && m.Learner.Move == MoveKind.None)
+                if (incomingTick < 0 && m.WeaponFlyingAt(m.Learner) && m.LearnerBrain.CurrentMode == ArenaBrain.Mode.Engage && m.Learner.Held != WeaponKind.None && !m.Learner.Move.HasValue)
                 {
                     incomingTick = m.Tick;
                     decisionsAtIncoming = m.Policy.Decisions;

@@ -30,10 +30,31 @@ namespace Hunted.Core
         FlipThrow = 9,
     }
 
-    /// <summary>Which tactics are scripted movement tech (a fixed input sequence the body runs to the end) rather than a steering rule.</summary>
+    /// <summary>Rules about the tactics that the game and the arena share, so the two cannot drift apart.</summary>
     public static class Tactics
     {
+        /// <summary>Which tactics are scripted movement tech (a fixed input sequence the body runs to the end) rather than a steering rule.</summary>
         public static bool IsMove(Tactic t) => t >= Tactic.Slide;
+
+        /// <summary>
+        /// Where a flip throw goes, from the target's offset (<paramref name="dx"/>, <paramref name="dy"/>)
+        /// from the thrower: -1 straight down (through platforms) when the target is nearly in the
+        /// column below, 1 straight up when it is in the column above and the game allows upward
+        /// throws (the Remix "upwards spear throw" option, on by default), 0 for a level throw. A
+        /// vertical throw does not steer, hence the narrow column.
+        /// </summary>
+        public static int FlipThrowY(float dx, float dy, bool upAllowed)
+        {
+            if (Math.Abs(dx) > 60f)
+            {
+                return 0;
+            }
+            if (dy < -40f)
+            {
+                return -1;
+            }
+            return dy > 40f && upAllowed ? 1 : 0;
+        }
     }
 
     /// <summary>
@@ -130,29 +151,57 @@ namespace Hunted.Core
             return net.Forward(features, scores);
         }
 
-        /// <summary>Picks a tactic for the situation and remembers the decision so later rewards can train it.</summary>
-        public Tactic Choose(float[] features, int tick)
+        /// <summary>
+        /// Picks a tactic for the situation and remembers the decision so later rewards can
+        /// train it. <paramref name="allowed"/>, when given, masks tactics out of both the greedy
+        /// pick and the random one (a move the body cannot start right now is not a choice, so
+        /// its arm is never trained on what some other tactic did in its place).
+        /// </summary>
+        public Tactic Choose(float[] features, int tick, bool[] allowed = null)
         {
             if (features == null || features.Length != Features)
             {
                 throw new ArgumentException("Expected " + Features + " features", nameof(features));
             }
+            if (allowed != null && allowed.Length != TacticCount)
+            {
+                throw new ArgumentException("Expected " + TacticCount + " entries", nameof(allowed));
+            }
             Evaluate(features);
-            int choice;
+            int choice = -1;
             if (rng.NextDouble() < Epsilon)
             {
-                choice = rng.Next(TacticCount);
-            }
-            else
-            {
-                choice = 0;
-                for (int i = 1; i < TacticCount; i++)
+                int open = 0;
+                for (int i = 0; i < TacticCount; i++)
                 {
-                    if (scores[i] > scores[choice])
+                    if (allowed == null || allowed[i])
+                    {
+                        open++;
+                    }
+                }
+                int pick = rng.Next(Math.Max(1, open));
+                for (int i = 0; i < TacticCount; i++)
+                {
+                    if ((allowed == null || allowed[i]) && pick-- == 0)
+                    {
+                        choice = i;
+                        break;
+                    }
+                }
+            }
+            if (choice < 0)
+            {
+                for (int i = 0; i < TacticCount; i++)
+                {
+                    if ((allowed == null || allowed[i]) && (choice < 0 || scores[i] > scores[choice]))
                     {
                         choice = i;
                     }
                 }
+            }
+            if (choice < 0)
+            {
+                choice = 0; // nothing allowed at all: the first tactic is always a steering rule
             }
             pending.Add(new Decision { Features = (float[])features.Clone(), Tactic = choice, Tick = tick, Predicted = scores[choice] });
             if (Decisions < int.MaxValue)
@@ -271,6 +320,27 @@ namespace Hunted.Core
                 + "|rs=" + RecentSurprise.ToString("R", CultureInfo.InvariantCulture)
                 + "|bs=" + BaselineSurprise.ToString("R", CultureInfo.InvariantCulture)
                 + "|net=" + net.Serialize();
+        }
+
+        /// <summary>Why <see cref="TryParse"/> rejects <paramref name="text"/>, for the log; null when it would parse.</summary>
+        public static string RejectionReason(string text, int features)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return "the file is empty";
+            }
+            if (TryParse(text, features, 0, out _))
+            {
+                return null;
+            }
+            foreach (string part in text.Split('|'))
+            {
+                if (part.StartsWith("v=") && part != "v=" + Version.ToString(CultureInfo.InvariantCulture))
+                {
+                    return "file version " + part.Substring(2) + " from an older build; this build reads version " + Version + " (the tactic and feature lists changed)";
+                }
+            }
+            return "the network does not have " + features + " inputs and " + TacticCount + " outputs";
         }
 
         /// <summary>Parses a saved policy; rejects one whose network does not match <paramref name="features"/> inputs.</summary>

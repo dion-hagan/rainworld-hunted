@@ -34,6 +34,7 @@ namespace Hunted
         public readonly Configurable<KeyCode> KeyKill;
         public readonly Configurable<KeyCode> KeyOverlay;
         public readonly Configurable<KeyCode> KeyReset;
+        public readonly Configurable<KeyCode> KeyForceMove;
 
         public Options()
         {
@@ -58,6 +59,7 @@ namespace Hunted
             KeyKill = config.Bind("keyKill", KeyCode.F9, new ConfigurableInfo("Kill: kill the Pursuer where it stands (drops its gear)."));
             KeyOverlay = config.Bind("keyOverlay", KeyCode.F10, new ConfigurableInfo("Toggle the tracker overlay."));
             KeyReset = config.Bind("keyReset", KeyCode.F11, new ConfigurableInfo("Reset: despawn the Pursuer and place it far away again, as at a new campaign."));
+            KeyForceMove = config.Bind("keyForceMove", KeyCode.F4, new ConfigurableInfo("Force move: cycle a move the slugcat Pursuer must use while armed and engaging (slide, pounce, slide pounce, roll, backflip, flip throw, then off). Bypasses the learner; nothing is recorded."));
         }
 
         public TrackerConfig ToTrackerConfig()
@@ -118,6 +120,7 @@ namespace Hunted
             AddKey(testing, ref y, KeyOverlay, "Toggle overlay");
             AddKey(testing, ref y, KeyReset, "Reset it far away");
             AddKey(testing, ref y, KeyForget, "Forget learned tactics");
+            AddKey(testing, ref y, KeyForceMove, "Force a move (cycles)");
         }
 
         private static void AddNumber(OpTab tab, ref float y, Configurable<int> cfg, string label)

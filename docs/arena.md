@@ -102,20 +102,16 @@ rules, which come out even (wins within a few points of deaths). The control is 
 2 rules in the learner's seat against the player-like opponent, so it is not even: the
 rules climb into the opponent's line and lose more than they win, which is the point.
 
-The six **moves** the policy can pick (see testing.md) have stand-ins in the fighter, with
-the game's timings and distances: a slide is eight ticks of crouching then fifteen ticks
-flat on the ground covering about six tiles, with twenty ticks of slowed walking after; a
-charged pounce crawls four ticks, holds the jump twenty and flies about eight tiles; a
-slide pounce leaves a twelve-tick slide at the game's launch speed (nine along, eight and a
-half up) for another eight tiles; a roll adds twenty ticks flat and fast on landing; a
-backflip runs up twelve ticks (skipped when already running that way), then goes up and
-a little back for twenty ticks in the air; a flip throw lets the weapon go five ticks into
-the flip, straight down through platforms or straight up when the target is nearly in the
-column, level otherwise. While flat both chunks lie at the lower chunk's height, so a level
-throw at chest height passes over. A move runs to its end and the body ignores steering
-meanwhile; a hit ends it; one picked when the body is not on the ground runs as Throw for
-the hold, as in the game. Wall jumps, pole hops and ledge climbs are movement-layer tech in
-the game and have no counterpart here (the arena has poles but no walls or ledges).
+The six **moves** the policy can pick (see testing.md) have stand-ins in the fighter with
+the game's timings and distances; each constant in `Fighter.cs` cites the line of the
+decompiled `Player.cs` it comes from. While flat (sliding, crawling, rolling) both chunks lie
+at the lower chunk's height, so a level throw at chest height passes over from up to about
+230 px, which is the range of the `spear_incoming` feature. A move runs to its end and the
+body ignores steering meanwhile; a hit ends it. The moves are only offered when the body
+can start one (on the ground, nothing in progress), exactly as in the game, so a move arm is
+never trained on what a steering rule did in its place. Wall jumps, pole hops and ledge
+climbs are movement-layer tech in the game and have no counterpart here (the arena has
+poles but no walls or ledges).
 
 What is simplified: the room (a floor, one-way platforms reached by poles or jumps, crates
 for cover, no water, pipes or beams), the body (two chunks that walk, jump and climb, plus
@@ -137,27 +133,29 @@ arena taught.
 ## What to expect
 
 The duel is close to symmetric, so the learner's edge over the control is mostly fewer
-deaths and fewer wasted throws, and its edge over the best yardstick is situational:
-approach when level with the target or above it, hold when it is above you. Every move is
-a losing constant tactic here (always-Slide -1.8, always-Pounce -2.9, always-SlidePounce
--3.1, always-Roll -2.6, always-Backflip -2.4, always-FlipThrow -2.0 per encounter, against
-always-Wait +0.35 and the control -0.09): a body running toward an armed opponent, or
-flipping in place, does not throw. What the arena teaches about them is mostly *when not*,
-and that takes data: with ten tactics, 30 000 encounters per instance leave greedy loops of
-a near-neutral move (a policy that backflips every time it lands, seven times an encounter)
-and no baseline; 100 000 clear the bar comfortably. Measured with four instances, judged
-over 4000 (seed 22):
+deaths and fewer wasted throws, and its edge over the best yardstick is situational. Every
+move is a losing constant tactic here (always-Slide -1.8, always-Pounce -2.9,
+always-SlidePounce -3.1, always-Roll -2.6, always-Backflip -2.4, always-FlipThrow -2.0 per
+encounter, against always-Wait +0.35 and the control -0.09): a body that only runs at an
+armed opponent does not throw. Used at the right moments they pay: the learned policies run
+one and a half to four moves per encounter (mostly Slide, Pounce and SlidePounce, with a
+FlipThrow now and then), win about 40% of encounters against the four-tactic learner's 30
+to 40%, and camp far less. Measured with four instances, judged over 4000, the best
+instance's reward per encounter and its margin over always-Wait:
 
-| encounters per instance | best learned policy | margin over always-Wait |
+| encounters per instance | seed 22 | seed 23 |
 |---|---|---|
-| 30 000 | +0.25 | -0.11 (no baseline written) |
-| 100 000 | +0.81 | +0.46 |
-| 300 000 | +0.77 | +0.42 |
+| 30 000 | +0.68 (margin +0.32) | +0.70 (margin +0.31) |
+| 100 000 | +0.85 (margin +0.49) | +0.78 (margin +0.39) |
 
-For comparison the four-tactic learner reached +0.43 to +0.68 at 30 000 (seeds 21 to 26),
-so the moves do not cost the learner anything once it has the data to rank them. More
-instances help more than more hours, because a policy converges within its first hundred
-thousand encounters and the run then picks the best of many.
+For comparison the four-tactic learner reached +0.43 to +0.68 at 30 000 (seeds 21 to 26)
+and, on these two seeds at 100 000, +0.30 and +0.42 (below the bar on both). Two things
+made this work, both found in review: moves the body cannot start are masked out of the
+choice rather than run as Throw (offered anyway, the move arms learned Throw's airborne
+values and the learner needed 100 000 encounters to clear the bar), and a weapon starting
+to fly at the body forces a decision at once (worth about +0.25 on its own). More instances
+help more than more hours, because a policy converges within its first tens of thousands
+of encounters and the run then picks the best of many.
 
 ## Reading the numbers
 
